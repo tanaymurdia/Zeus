@@ -1,0 +1,18 @@
+[package]
+name = "cosmic_drift_server"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cosmic_drift_server"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.57", features = ["derive"] }
+quinn = "0.11.9"
+rand = "0.9.2"
+rapier3d = "0.23"
+tokio = { version = "1.49.0", features = ["full"] }
+zeus_common = { version = "0.1.0", path = "../zeus_common" }
+zeus_node = { version = "0.1.0", path = "../zeus_node" }
+zeus_transport = { version = "0.1.0", path = "../zeus_transport" }

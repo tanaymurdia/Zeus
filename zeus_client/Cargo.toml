@@ -1,0 +1,16 @@
+[package]
+name = "zeus_client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zeus_common = { version = "0.1.0", path = "../zeus_common" }
+zeus_transport = { version = "0.1.0", path = "../zeus_transport" }
+tokio = { version = "1.0", features = ["full"] }
+quinn = "0.11"
+url = "2.0"
+thiserror = "2.0"
+futures = "0.3"
+
+[dev-dependencies]
+zeus_node = { version = "0.1.0", path = "../zeus_node" }

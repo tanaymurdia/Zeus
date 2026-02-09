@@ -1,0 +1,12 @@
+[package]
+name = "cosmic_drift"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.15", features = ["dynamic_linking"] } # dynamic_linking for faster dev builds
+bevy_rapier3d = "0.28"
+tokio = { version = "1.0", features = ["full"] }
+zeus_client = { path = "../zeus_client" }
+zeus_common = { path = "../zeus_common" }
+rand = "0.8"

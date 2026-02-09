@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "zeus_common",
+    "zeus_node",
+    "zeus_transport",
+    "zeus_client",
+    "cosmic_drift",
+    "cosmic_drift_server",
+]
+resolver = "2"
+

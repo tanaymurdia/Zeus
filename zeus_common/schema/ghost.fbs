@@ -1,0 +1,68 @@
+namespace zeus.ghost;
+
+struct Vec3 {
+  x: float;
+  y: float;
+  z: float;
+}
+
+table Ghost {
+  entity_id: ulong;
+  position: Vec3;
+  velocity: Vec3;
+  signature: [ubyte];
+}
+
+enum HandoffType : byte { Offer = 0, Ack = 1, Commit = 2 }
+
+table HandoffMsg {
+  entity_id: ulong;
+  type: HandoffType;
+  state: Ghost;
+}
+
+root_type Ghost;
+
+// Discovery Protocol
+
+struct NodeLoad {
+  entity_count: ushort;
+  cpu_percent: ubyte;
+}
+
+table DiscoveryAnnounce {
+  node_id: ulong;
+  address: string;
+  position: Vec3;
+  load: NodeLoad;
+}
+
+table DiscoveryFindNode {
+  sender_id: ulong;
+  search_pos: Vec3;
+}
+
+table DiscoveryNodeInfo {
+  node_id: ulong;
+  address: string;
+  position: Vec3;
+}
+
+table DiscoveryHeartbeat {
+  sender_id: ulong;
+}
+
+union DiscoveryPayload { 
+  DiscoveryAnnounce, 
+  DiscoveryFindNode, 
+  DiscoveryNodeInfo, 
+  DiscoveryHeartbeat 
+}
+
+table DiscoveryMsg {
+  payload: DiscoveryPayload;
+}
+
+table StateUpdate {
+    ghosts: [Ghost];
+}
