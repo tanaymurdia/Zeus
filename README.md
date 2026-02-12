@@ -1,4 +1,4 @@
-# Spatial Hypervisor (Project Zeus)
+# Zeus
 
 > **Zero-Trust Physics for the Spatial Web.**
 > Zeus is a proof-of-concept for a serverless, spatially-partitioned game world where entities migrate seamlessly between nodes using a specialized handoff protocol.
@@ -130,4 +130,10 @@ The next frontier for Zeus is **Elastic Partitioning**:
 -   **Flash Crowd Handling**: If 10,000 players gather in one spot, the Mesh will recursively split that region into a dense **Quadtree** of nodes.
 -   **Cost Efficiency**: Empty regions effectively "turn off" (merge into larger idle nodes), minimizing infrastructure costs.
 
-See [scaling_strategy.md](file:///Users/tanaymurdia/.gemini/antigravity/brain/a4edf8af-67b3-4d4b-88d0-c2c56cb646fb/scaling_strategy.md) for the detailed design.
+See the [Scaling Strategy](https://github.com/tanaymurdia/Zeus/blob/main/docs/scaling_strategy.md) (Work in Progress) for the detailed design.
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
