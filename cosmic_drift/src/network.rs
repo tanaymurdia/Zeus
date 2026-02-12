@@ -20,11 +20,9 @@ impl Plugin for NetworkPlugin {
     }
 }
 
-/// Buffer for incoming entity updates (since packet batching splits them up)
 #[derive(Resource, Default)]
 pub struct AccumulatedState {
     pub positions: Arc<std::sync::Mutex<std::collections::HashMap<u64, (f32, f32, f32)>>>,
-    /// The local player's entity ID, used to filter self from NPC rendering
     pub player_id: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
@@ -34,7 +32,6 @@ fn generate_snapshots(
     time: Res<Time>,
     mut timer: Local<f32>,
 ) {
-    // Generate snapshot at 60Hz independent of packet arrival
     *timer += time.delta_secs();
     if *timer < 0.016 {
         return;
@@ -62,10 +59,8 @@ fn generate_snapshots(
     }
 }
 
-/// Real server status received from backend
 #[derive(Resource, Default)]
 pub struct ServerStatus {
-    // Using atomics for lock-free access from game thread
     pub entity_count: Arc<AtomicU16>,
     pub node_count: Arc<AtomicU8>,
 }
@@ -86,10 +81,8 @@ pub struct Snapshot {
     pub entities: std::collections::HashMap<u64, (f32, f32, f32)>,
 }
 
-/// Ball positions history for interpolation
 #[derive(Resource, Default)]
 pub struct BallPositions {
-    // Store last 10 snapshots
     pub snapshots: Arc<std::sync::Mutex<std::collections::VecDeque<Snapshot>>>,
 }
 
@@ -105,7 +98,6 @@ fn send_player_state(
         return;
     }
 
-    // Rate Limit: 60Hz (0.016s) for responsive collisions
     *timer += time.delta_secs();
     if *timer < 0.016 {
         return;
@@ -120,10 +112,8 @@ fn send_player_state(
         );
         let vel = (velocity.linvel.x, velocity.linvel.y, velocity.linvel.z);
 
-        // Send via Client
         let client_lock = net.client.as_ref().unwrap().clone();
         let rt_handle = net.runtime.handle().clone();
-        // Fire and forget send task
         rt_handle.spawn(async move {
             let client = client_lock.lock().await;
             let _ = client.send_state(pos, vel).await;
@@ -135,7 +125,7 @@ fn send_player_state(
 pub struct NetworkResource {
     pub client: Option<Arc<Mutex<ZeusClient>>>,
     pub runtime: Runtime,
-    // Shared accumulated state for net thread to write to
+
     pub accumulated: Option<Arc<std::sync::Mutex<std::collections::HashMap<u64, (f32, f32, f32)>>>>,
 }
 
@@ -167,7 +157,6 @@ fn setup_network(
         }
     };
 
-    // Store the player's entity ID so we can filter it from NPC rendering
     {
         let player_id = {
             let _guard = net.runtime.enter();
@@ -181,15 +170,12 @@ fn setup_network(
 
     net.client = Some(client.clone());
 
-    // Clone resources for background task
     let entity_count = status.entity_count.clone();
     let node_count = status.node_count.clone();
 
-    // Use the global resource's accumulator so the systems can read it!
     let accumulated_positions = accumulated_state.positions.clone();
-    net.accumulated = Some(accumulated_positions.clone()); // Optional: keep it in net resource too if needed, but redundant now
+    net.accumulated = Some(accumulated_positions.clone());
 
-    // Spawn connect and status reader task
     let client_clone = client.clone();
     rt_handle.spawn(async move {
         let addr: std::net::SocketAddr = "127.0.0.1:5000".parse().unwrap();
@@ -206,32 +192,23 @@ fn setup_network(
             }
         }
 
-        // Background loop: read all datagrams
         loop {
-            // Get connection handle so we don't hold the client lock while waiting
             let conn = {
                 let client = client_clone.lock().await;
                 client.connection()
             };
 
             if let Some(conn) = conn {
-                // Now we can await without holding the lock!
-                // println!("[Net] Waiting for datagram...");
                 match conn.read_datagram().await {
                     Ok(data) => {
-                        let data = data.to_vec(); // Copy data from Bytes
-                        // println!("[Net] Read datagram {} bytes. Byte[0]={:02X?}", data.len(), data.get(0));
-
+                        let data = data.to_vec();
                         if data.len() >= 4 && data[0] == 0xAA {
-                            // Status message
                             let entities = ((data[1] as u16) << 8) | (data[2] as u16);
                             let nodes = data[3];
                             entity_count.store(entities, Ordering::Relaxed);
                             node_count.store(nodes, Ordering::Relaxed);
                         } else if data.len() >= 1 && data[0] == 0xCC {
-                            // StateUpdate (standardized)
                             let bytes = &data[1..];
-                            // println!("[Net] Received StateUpdate ({} bytes)", bytes.len());
                             if let Ok(update) =
                                 zeus_common::flatbuffers::root::<zeus_common::StateUpdate>(bytes)
                             {
@@ -243,7 +220,7 @@ fn setup_network(
                                                 map.insert(id, (pos.x(), pos.y(), pos.z()));
                                             }
                                         }
-                                        // Log sample positions every ~60 updates
+
                                         static COUNTER: std::sync::atomic::AtomicU32 =
                                             std::sync::atomic::AtomicU32::new(0);
                                         let c = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -263,7 +240,6 @@ fn setup_network(
                                 }
                             }
                         } else if data.len() >= 3 && data[0] == 0xBB {
-                            // Legacy Position message
                         }
                     }
                     Err(e) => {
@@ -272,7 +248,6 @@ fn setup_network(
                     }
                 }
             } else {
-                // Not connected yet, wait a bit
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }

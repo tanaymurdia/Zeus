@@ -8,5 +8,5 @@ use zeus_common::HandoffMsg;
 pub enum NetworkEvent {
     NewConnection(quinn::Connection),
     Handoff(u64, HandoffMsg<'static>),
-    Payload(quinn::Connection, Vec<u8>, bool), // (Conn, Bytes, IsStream)
+    Payload(quinn::Connection, Vec<u8>, bool),
 }

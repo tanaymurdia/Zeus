@@ -6,7 +6,6 @@ use zeus_client::ZeusClient;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting Simple Viz Client...");
 
-    // Use fixed ID 9999 instead of rand::random()
     let mut client = ZeusClient::new(9999)?;
     let addr: SocketAddr = "127.0.0.1:5000".parse()?;
 
@@ -14,14 +13,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.connect(addr).await?;
     println!("Connected!");
 
-    // Read loop
     loop {
-        // Poll with timeout to not block forever if silent
         if let Ok(Some(data)) =
             tokio::time::timeout(Duration::from_millis(100), client.read_datagram()).await
         {
             if data.len() > 0 {
-                // Debug print every packet type
                 println!(
                     "[Client] Packet: Type 0x{:02X}, Len {}",
                     data[0],
@@ -43,7 +39,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else if data[0] == 0xAA {
-                    // Status
                     if data.len() >= 4 {
                         let entities = ((data[1] as u16) << 8) | (data[2] as u16);
                         println!("    -> Server Status: {} entities", entities);

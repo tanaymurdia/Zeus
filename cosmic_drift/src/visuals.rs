@@ -11,24 +11,21 @@ impl Plugin for VisualsPlugin {
     }
 }
 
-/// Marker for floor zone entities
 #[derive(Component)]
 pub struct FloorZone {
     pub zone_index: u8,
 }
 
-/// Resource tracking current floor zone state
 #[derive(Resource, Default)]
 pub struct FloorZoneState {
     pub current_node_count: u8,
 }
 
-/// Colors for each node zone
 const ZONE_COLORS: [(f32, f32, f32); 4] = [
-    (0.1, 0.6, 0.3), // Node 0: Green
-    (0.2, 0.3, 0.8), // Node 1: Blue
-    (0.7, 0.2, 0.6), // Node 2: Purple
-    (0.8, 0.5, 0.1), // Node 3: Orange
+    (0.1, 0.6, 0.3),
+    (0.2, 0.3, 0.8),
+    (0.7, 0.2, 0.6),
+    (0.8, 0.5, 0.1),
 ];
 
 fn setup_visuals(
@@ -38,8 +35,6 @@ fn setup_visuals(
 ) {
     commands.insert_resource(FloorZoneState::default());
 
-    // Create 4 floor zones (side by side along X axis)
-    // Each zone is 250 units wide, total 1000
     let zone_width = 250.0;
     let floor_depth = 1000.0;
 
@@ -47,7 +42,6 @@ fn setup_visuals(
         let x_pos = -375.0 + (i as f32 * zone_width);
         let (r, g, b) = ZONE_COLORS[i as usize];
 
-        // Initially only zone 0 is visible (green), others are dim
         let alpha = if i == 0 { 1.0 } else { 0.1 };
 
         commands.spawn((
@@ -73,13 +67,12 @@ fn setup_visuals(
         ));
     }
 
-    // Boundary walls between zones (appear when zones activate)
     for i in 1..4u8 {
         let x_pos = -500.0 + (i as f32 * zone_width);
         commands.spawn((
             Mesh3d(meshes.add(Cuboid::new(0.5, 30.0, floor_depth))),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: LinearRgba::new(1.0, 1.0, 1.0, 0.0).into(), // Initially invisible
+                base_color: LinearRgba::new(1.0, 1.0, 1.0, 0.0).into(),
                 alpha_mode: AlphaMode::Blend,
                 double_sided: true,
                 cull_mode: None,
@@ -87,11 +80,10 @@ fn setup_visuals(
                 ..default()
             })),
             Transform::from_xyz(x_pos, 15.0, 0.0),
-            FloorZone { zone_index: i }, // Reuse to track boundary walls
+            FloorZone { zone_index: i },
         ));
     }
 
-    // Zone Labels (dynamically shown based on active nodes)
     let camera_pos = Vec3::new(0.0, 50.0, 50.0);
 
     for i in 0..4u8 {
@@ -117,7 +109,6 @@ fn setup_visuals(
     }
 }
 
-/// Update floor zone visibility based on actual node count from backend
 fn update_floor_zones(
     server_status: Res<ServerStatus>,
     mut zone_state: ResMut<FloorZoneState>,
@@ -127,13 +118,11 @@ fn update_floor_zones(
 ) {
     let node_count = server_status.get_node_count();
 
-    // Only update if node count changed
     if node_count == zone_state.current_node_count {
         return;
     }
     zone_state.current_node_count = node_count;
 
-    // Update floor zone materials
     for (zone, material_handle) in query.iter_mut() {
         if let Some(material) = materials.get_mut(material_handle) {
             let (r, g, b) = ZONE_COLORS[zone.zone_index as usize];
@@ -146,7 +135,6 @@ fn update_floor_zones(
         }
     }
 
-    // Update zone labels
     for (zone, mut text_color) in text_query.iter_mut() {
         let (r, g, b) = ZONE_COLORS[zone.zone_index as usize];
         let alpha = if zone.zone_index < node_count {
@@ -165,6 +153,4 @@ fn update_floor_zones(
     }
 }
 
-fn animate_atmosphere(_time: Res<Time>, mut _query: Query<&mut Transform, With<PointLight>>) {
-    // maybe move lights?
-}
+fn animate_atmosphere(_time: Res<Time>, mut _query: Query<&mut Transform, With<PointLight>>) {}

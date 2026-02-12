@@ -23,7 +23,7 @@ table HandoffMsg {
 
 root_type Ghost;
 
-// Discovery Protocol
+
 
 struct NodeLoad {
   entity_count: ushort;

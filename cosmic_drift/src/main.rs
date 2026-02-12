@@ -13,13 +13,11 @@ struct NpcEntity {
     id: u64,
 }
 
-/// Marker for balls rendered from server physics
 #[derive(Component)]
 struct ServerBall {
     pub id: u64,
 }
 
-/// Resource tracking spawned entity count
 #[derive(Resource, Default)]
 pub struct SpawnCounter {
     pub count: u64,
@@ -28,7 +26,7 @@ pub struct SpawnCounter {
 
 fn main() {
     App::new()
-        .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1))) // Dark Grey (not black)
+        .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
         .init_resource::<SpawnCounter>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -40,7 +38,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_plugins(RapierDebugRenderPlugin::default()) // Debug physics enabled
+        .add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(visuals::VisualsPlugin)
         .add_plugins(network::NetworkPlugin)
         .add_systems(Startup, (setup_scene, setup_hud))
@@ -103,7 +101,6 @@ fn update_hud(
             );
         }
 
-        // Get real data from backend
         let backend_entities = server_status.get_entity_count();
         let mesh_nodes = server_status.get_node_count();
 
@@ -121,13 +118,12 @@ fn update_hud(
         );
     }
 
-    // Update text color based on backend load
     let backend_entities = server_status.get_entity_count();
     for mut color in color_query.iter_mut() {
         if backend_entities > 2000 {
-            *color = TextColor(Color::srgb(1.0, 0.2, 0.2)); // Red
+            *color = TextColor(Color::srgb(1.0, 0.2, 0.2));
         } else if backend_entities > 1500 {
-            *color = TextColor(Color::srgb(1.0, 1.0, 0.2)); // Yellow
+            *color = TextColor(Color::srgb(1.0, 1.0, 0.2));
         } else {
             *color = TextColor(Color::WHITE);
         }
@@ -156,7 +152,7 @@ fn move_player(
         }
 
         if force != Vec3::ZERO {
-            impulse.impulse += force.normalize() * thrust * 0.016; // approximate dt
+            impulse.impulse += force.normalize() * thrust * 0.016;
         }
     }
 }
@@ -175,7 +171,7 @@ fn setup_scene(
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(1.0).mesh())),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.0, 1.0, 1.0), // Cyan
+            base_color: Color::srgb(0.0, 1.0, 1.0),
             emissive: LinearRgba::rgb(0.0, 2.0, 2.0),
             ..default()
         })),
@@ -191,10 +187,9 @@ fn setup_scene(
         PlayerShip,
     ));
 
-    // Light
     commands.spawn((
         PointLight {
-            intensity: 2_000_000.0, // Boost intensity significantly
+            intensity: 2_000_000.0,
             shadows_enabled: true,
             ..default()
         },
@@ -202,7 +197,6 @@ fn setup_scene(
     ));
 }
 
-/// Spawn NPC entities on keypress for load testing
 fn spawn_entities_on_keypress(
     mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
@@ -230,7 +224,7 @@ fn spawn_entities_on_keypress(
 
     let mesh = meshes.add(Sphere::new(0.3).mesh());
     let material = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.5, 0.0), // Orange NPCs
+        base_color: Color::srgb(1.0, 0.5, 0.0),
         emissive: LinearRgba::rgb(1.0, 0.3, 0.0),
         ..default()
     });
@@ -243,7 +237,6 @@ fn spawn_entities_on_keypress(
         let id = counter.next_id;
         counter.next_id += 1;
 
-        // Randomize position around player
         let offset = Vec3::new(
             (id as f32 * 0.7).sin() * 20.0,
             0.5,
@@ -272,7 +265,6 @@ fn spawn_entities_on_keypress(
         ));
     }
 
-    // Virtual entities (not rendered, just counted for server load)
     let virtual_count = spawn_count as u64 - visual_to_spawn;
     counter.next_id += virtual_count;
     counter.count += spawn_count as u64;
@@ -287,7 +279,6 @@ fn spawn_entities_on_keypress(
     }
 }
 
-/// Camera follows the player ship
 fn camera_follow(
     player_query: Query<&Transform, With<PlayerShip>>,
     mut camera_query: Query<&mut Transform, (With<MainCamera>, Without<PlayerShip>)>,
@@ -299,18 +290,14 @@ fn camera_follow(
         return;
     };
 
-    // Camera offset: behind and above the player
     let offset = Vec3::new(0.0, 40.0, 40.0);
     let target_pos = player_transform.translation + offset;
 
-    // Smooth follow (lerp)
     camera_transform.translation = camera_transform.translation.lerp(target_pos, 0.05);
 
-    // Look at player
     camera_transform.look_at(player_transform.translation, Vec3::Y);
 }
 
-/// Render balls at positions received from physics server
 fn render_server_balls(
     mut commands: Commands,
     ball_positions: Res<network::BallPositions>,
@@ -328,9 +315,8 @@ fn render_server_balls(
         return;
     }
 
-    // Interpolation delay (33ms for responsive collisions)
     let delay = std::time::Duration::from_millis(33);
-    // let seed_addr: std::net::SocketAddr = "127.0.0.1:5001".parse().unwrap();
+
     let now = std::time::Instant::now();
     let render_time = if now > snapshots[0].timestamp + delay {
         now - delay
@@ -338,14 +324,6 @@ fn render_server_balls(
         snapshots[0].timestamp
     };
 
-    // println!("[Render] Snapshots: {}, RenderTime: {:?}, Head: {:?}", snapshots.len(), render_time, snapshots[0].timestamp);
-    // println!(
-    //     "[Render] Snapshots: {}, Head: {:?}",
-    //     snapshots.len(),
-    //     snapshots[0].timestamp
-    // );
-
-    // Find surrounding snapshots
     let mut prev: Option<&network::Snapshot> = None;
     let mut next: Option<&network::Snapshot> = None;
 
@@ -360,11 +338,9 @@ fn render_server_balls(
         }
     }
 
-    // Target positions map for this frame: ID -> Position
     let mut target_positions = std::collections::HashMap::new();
 
     if let (Some(a), Some(b)) = (prev, next) {
-        // Interpolate
         let duration = b.timestamp.duration_since(a.timestamp).as_secs_f32();
         let elapsed = render_time.duration_since(a.timestamp).as_secs_f32();
         let alpha = if duration > 0.0001 {
@@ -373,9 +349,6 @@ fn render_server_balls(
             0.0
         };
 
-        // Only interpolate entities present in BOTH snapshots (or handle spawn/despawn)
-        // For smoothness, if in B but not A, just show B (or lerp from spawn?).
-        // Simple approach: Iterate B's entities.
         for (&id, &pos_b_tuple) in &b.entities {
             let pos_b = Vec3::new(pos_b_tuple.0, pos_b_tuple.1, pos_b_tuple.2);
 
@@ -383,12 +356,11 @@ fn render_server_balls(
                 let pos_a = Vec3::new(pos_a_tuple.0, pos_a_tuple.1, pos_a_tuple.2);
                 pos_a.lerp(pos_b, alpha)
             } else {
-                pos_b // Just snap if new
+                pos_b
             };
             target_positions.insert(id, pos);
         }
     } else {
-        // Fallback to latest
         if let Some(last) = snapshots.back() {
             for (&id, &pos) in &last.entities {
                 target_positions.insert(id, Vec3::new(pos.0, pos.1, pos.2));
@@ -396,14 +368,12 @@ fn render_server_balls(
         }
     }
 
-    // Filter out the player's own entity — it's already rendered as the blue ball
     let player_id = accumulated_state.player_id.lock().ok().and_then(|pid| *pid);
     if let Some(pid) = player_id {
         target_positions.remove(&pid);
     }
 
     if !target_positions.is_empty() {
-        // Sample log: first 3 positions
         static RENDER_CTR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let c = RENDER_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if c % 120 == 0 {
@@ -416,27 +386,21 @@ fn render_server_balls(
         }
     }
 
-    // --- Sync Bevy Entities ---
-
-    // 1. Identify existing balls
     let mut existing_balls = std::collections::HashMap::new();
     for (entity, _, server_ball) in ball_query.iter() {
         existing_balls.insert(server_ball.id, entity);
     }
 
-    // 2. Update or Spawn
     for (&id, &pos) in &target_positions {
         if let Some(&entity) = existing_balls.get(&id) {
-            // Update
             if let Ok((_, mut transform, _)) = ball_query.get_mut(entity) {
                 transform.translation = pos;
             }
         } else {
-            // Spawn
             commands.spawn((
                 Mesh3d(meshes.add(Sphere::new(0.5).mesh())),
                 MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 0.5, 0.0), // Orange
+                    base_color: Color::srgb(1.0, 0.5, 0.0),
                     emissive: LinearRgba::rgb(1.0, 0.3, 0.0),
                     ..default()
                 })),
@@ -446,7 +410,6 @@ fn render_server_balls(
         }
     }
 
-    // 3. Despawn Stale
     for (id, entity) in existing_balls {
         if !target_positions.contains_key(&id) {
             commands.entity(entity).despawn();

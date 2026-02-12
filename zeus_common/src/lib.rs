@@ -1,4 +1,3 @@
-#[allow(dead_code, unused_imports)]
 pub mod ghost_generated;
 
 pub use ghost_generated::zeus::ghost::{
@@ -72,7 +71,6 @@ impl GhostSerializer {
             },
         );
 
-        // Wrap in HandoffMsg (Offer) to match Node Protocol
         let msg = HandoffMsg::create(
             &mut self.builder,
             &HandoffMsgArgs {
@@ -128,8 +126,6 @@ mod tests {
         let mut serializer = GhostSerializer::new();
         let bytes = serializer.serialize(12345, (1.0, 2.0, 3.0), (0.1, 0.2, 0.3));
 
-        // Verify deserialization
-        // Verify deserialization
         let msg = flatbuffers::root::<HandoffMsg>(bytes).expect("Failed to parse HandoffMsg");
         assert_eq!(msg.type_(), HandoffType::Offer);
         let ghost = msg.state().unwrap();
@@ -142,15 +138,12 @@ mod tests {
     fn test_ghost_serializer_reuse() {
         let mut serializer = GhostSerializer::new();
 
-        // First serialization
         let bytes1 = serializer.serialize(1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
-        // Need to copy because buffer is reused
         let vec1 = bytes1.to_vec();
         let msg1 = flatbuffers::root::<HandoffMsg>(&vec1).unwrap();
         let ghost1 = msg1.state().unwrap();
         assert_eq!(ghost1.entity_id(), 1);
 
-        // Second serialization (reset happens internally)
         let bytes2 = serializer.serialize(2, (10.0, 10.0, 10.0), (0.0, 0.0, 0.0));
         let msg2 = flatbuffers::root::<HandoffMsg>(bytes2).unwrap();
         let ghost2 = msg2.state().unwrap();
@@ -162,7 +155,6 @@ mod tests {
     fn test_ghost_serializer_edge_cases() {
         let mut serializer = GhostSerializer::new();
 
-        // Max values
         let bytes = serializer.serialize(u64::MAX, (f32::MAX, f32::MIN, 0.0), (0.0, 0.0, 0.0));
         let msg = flatbuffers::root::<HandoffMsg>(bytes).unwrap();
         let ghost = msg.state().unwrap();
@@ -170,7 +162,6 @@ mod tests {
         assert_eq!(ghost.position().unwrap().x(), f32::MAX);
         assert_eq!(ghost.position().unwrap().y(), f32::MIN);
 
-        // NaN values (should serialize, though logic might break elsewhere. Serializer shouldn't panic)
         let bytes_nan = serializer.serialize(1, (f32::NAN, 0.0, 0.0), (0.0, 0.0, 0.0));
         let msg_nan = flatbuffers::root::<HandoffMsg>(bytes_nan).unwrap();
         let ghost_nan = msg_nan.state().unwrap();
@@ -187,15 +178,10 @@ mod tests {
         let msg = flatbuffers::root::<HandoffMsg>(bytes).unwrap();
         let ghost = msg.state().unwrap();
 
-        // Verify valid signature
         assert!(verify_signature(ghost, &verifying_key));
 
-        // Verify tampering fails
         let mut tampered_bytes = bytes.to_vec();
-        tampered_bytes[40] ^= 1; // Corrupt data (approximate offset for payload)
-
-        let mut tampered_bytes = bytes.to_vec();
-        tampered_bytes[40] ^= 1; // Corrupt data (approximate offset for payload)
+        tampered_bytes[40] ^= 1;
 
         let tampered_msg = flatbuffers::root::<HandoffMsg>(&tampered_bytes).unwrap();
         let tampered_ghost = tampered_msg.state().unwrap();

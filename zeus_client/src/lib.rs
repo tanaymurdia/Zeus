@@ -3,20 +3,11 @@ use std::net::SocketAddr;
 use thiserror::Error;
 use zeus_common::{GhostSerializer, ed25519_dalek::SigningKey};
 use zeus_transport::make_promiscuous_endpoint;
-// use tokio::io::AsyncWriteExt; // Implicitly used? No, I added it manually. But warning says unused.
-// Wait, stream.write_all comes from AsyncWriteExt. If I delete it, code might break if not in scope.
-// But the warning says unused. Let's delete it and see. If it breaks, I'll put it back.
-// Actually, earlier compilation said "AsyncWriteExt reimported". I had it twice.
-// Step 867 removed one, Step 877 removed valid one?
-// Let's rely on the warning. The warning said it's unused.
-// Ah, `quinn::SendStream` implements `tokio::io::AsyncWrite`? No, `quinn` has its own async write?
-// Actually `quinn` depends on `tokio`.
-// Let's comment it out.
 
 #[derive(Error, Debug)]
 pub enum ClientError {
     #[error("Transport Error: {0}")]
-    Transport(String), // Converting Box<dyn Error> to String to avoid Send/Sync issues
+    Transport(String),
     #[error("Connection Error: {0}")]
     Connection(#[from] quinn::ConnectionError),
     #[error("IO Error: {0}")]
@@ -38,7 +29,6 @@ pub struct ZeusClient {
 
 impl ZeusClient {
     pub fn new(local_id: u64) -> Result<Self, ClientError> {
-        // Bind to ephemeral port on loopback (IPv4)
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let (endpoint, _) =
             make_promiscuous_endpoint(addr).map_err(|e| ClientError::Transport(e.to_string()))?;
@@ -85,20 +75,14 @@ impl ZeusClient {
         Ok(())
     }
 
-    /// Try to read server status datagram (non-blocking poll)
-    /// Returns Option<(entity_count, node_count)>
     pub fn try_read_server_status(&self) -> Option<(u16, u8)> {
         if let Some(_conn) = &self.connection {
-            // Try to read a datagram (non-blocking check not directly available)
-            // We'll rely on the game loop calling this periodically
-            // For now, return None - the async version will be used
             None
         } else {
             None
         }
     }
 
-    /// Async read server status - call from background task
     pub async fn read_server_status(&self) -> Option<(u16, u8)> {
         if let Some(conn) = &self.connection {
             if let Ok(datagram) = conn.read_datagram().await {
@@ -112,12 +96,10 @@ impl ZeusClient {
         None
     }
 
-    /// Get connection for direct access
     pub fn connection(&self) -> Option<Connection> {
         self.connection.clone()
     }
 
-    /// Read raw datagram from server
     pub async fn read_datagram(&self) -> Option<Vec<u8>> {
         if let Some(conn) = &self.connection {
             match conn.read_datagram().await {

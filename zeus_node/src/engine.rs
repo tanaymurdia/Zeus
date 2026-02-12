@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use zeus_common::{Ghost, HandoffMsg, HandoffType, Vec3};
 use zeus_transport::make_promiscuous_endpoint;
 
-/// Configuration for a Zeus Node
 #[derive(Clone, Debug)]
 pub struct ZeusConfig {
     pub bind_addr: SocketAddr,
@@ -17,20 +16,16 @@ pub struct ZeusConfig {
     pub margin: f32,
 }
 
-/// Events emitted by the Zeus Engine to the Application
 #[derive(Debug)]
 pub enum ZeusEvent {
-    /// An entity has been handed off TO this node.
-    /// The application should take ownership (e.g. create physics body).
     EntityArrived {
         id: u64,
         pos: (f32, f32, f32),
         vel: (f32, f32, f32),
     },
-    /// An entity has been handed off FROM this node.
-    /// The application should release ownership (e.g. destroy physics body).
-    EntityDeparted { id: u64 },
-    /// A remote entity has updated its position (Ghost).
+    EntityDeparted {
+        id: u64,
+    },
     RemoteUpdate {
         id: u64,
         pos: (f32, f32, f32),
@@ -38,15 +33,13 @@ pub enum ZeusEvent {
     },
 }
 
-/// The Core Zeus Engine
-/// Handles Networking, Discovery, Handoffs, and State consistency.
 pub struct ZeusEngine {
     pub node: NodeActor,
     pub discovery: DiscoveryActor,
     pub endpoint: quinn::Endpoint,
     pub connections: Vec<quinn::Connection>,
     pub network_rx: mpsc::Receiver<NetworkEvent>,
-    pub network_tx: mpsc::Sender<NetworkEvent>, // Kept to clone for new connections
+    pub network_tx: mpsc::Sender<NetworkEvent>,
     #[allow(dead_code)]
     pub config: ZeusConfig,
     pub signing_key: zeus_common::SigningKey,
@@ -101,10 +94,7 @@ impl ZeusEngine {
         })
     }
 
-    /// Sync a local entity's state to Zeus.
-    /// Call this every tick for every entity you simulate.
     pub fn update_entity(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
-        // Only update if we are the authority
         if let Some(entity) = self.node.manager.get_entity_mut(id) {
             if entity.state == AuthorityState::Local || entity.state == AuthorityState::HandoffOut {
                 entity.pos = pos;
@@ -121,11 +111,6 @@ impl ZeusEngine {
         }
     }
 
-    /// Run one tick of the engine.
-    /// - Processes network events
-    /// - Runs actor updates
-    /// - Sends handoffs & discovery messages
-    /// - Returns events for the app to handle
     pub async fn tick(&mut self, dt: f32) -> Result<Vec<ZeusEvent>, Box<dyn std::error::Error>> {
         let mut app_events = Vec::new();
 
@@ -145,7 +130,6 @@ impl ZeusEngine {
                     tokio::spawn(async move {
                         loop {
                             tokio::select! {
-                                // Streams (active handoff)
                                 res = conn_reader.accept_uni() => {
                                     match res {
                                         Ok(mut recv) => {
@@ -154,25 +138,16 @@ impl ZeusEngine {
                                             }
                                         }
                                         Err(_e) => {
-                                            // Expected when connection closes, or no streams
                                             break;
                                         }
                                     }
                                 }
-                                // Datagrams (discovery/info)
                                 res = conn_reader.read_datagram() => {
                                      match res {
                                         Ok(bytes) => {
-                                            // Filter self-talk if possible.
-                                            // Note: internal addr check might be hard here without passing context.
-                                            // But we can check if remote == local?
-                                            // Actually, Quinn endpoint knows its local addr.
-                                            // But inside this loop we just have connection.
-                                            // println!("[Zeus] Received Datagram: {} bytes from {}", bytes.len(), conn_reader.remote_address());
                                             let _ = tx_reader.send(NetworkEvent::Payload(conn_reader.clone(), bytes.to_vec(), false)).await;
                                         }
                                         Err(_e) => {
-                                             // eprintln!("[Zeus] Read Error: {}", e);
                                              break;
                                         }
                                      }
@@ -193,7 +168,6 @@ impl ZeusEngine {
                             let new_state =
                                 self.node.manager.get_entity(id).map(|e| e.state.clone());
 
-                            // Detect transitions for App Events
                             if let Some(new_st) = new_state {
                                 if old_state.is_none() && new_st == AuthorityState::Local {
                                     if let Some(e) = self.node.manager.get_entity(id) {
@@ -219,15 +193,6 @@ impl ZeusEngine {
                             }
                         }
                     } else {
-                        // Datagram
-                        let port = conn.remote_address().port();
-                        if port < 5000 || port > 5010 {
-                            // println!(
-                            //     "[Zeus] Received Datagram: {} bytes from {}",
-                            //     bytes.len(),
-                            //     conn.remote_address()
-                            // );
-                        }
                         if let Ok(msg) =
                             zeus_common::flatbuffers::root::<zeus_common::DiscoveryMsg>(&bytes)
                         {
@@ -256,11 +221,6 @@ impl ZeusEngine {
             }
         }
 
-        // NOTE: broadcast_state_to_clients is NOT called here.
-        // The application should call it AFTER syncing external physics positions
-        // via update_entity(), to avoid EntityManager::update()'s crude integration
-        // corrupting the positions.
-
         Ok(app_events)
     }
 
@@ -268,23 +228,9 @@ impl ZeusEngine {
         use zeus_common::flatbuffers::FlatBufferBuilder;
         let mut builder = FlatBufferBuilder::new();
 
-        // 1. Collect Local Entities
-        // Snapshot all entities to avoid borrow issues with chunks
         let entities: Vec<_> = self.node.manager.entities.values().collect();
 
-        // Batch size to stay under QUIC datagram PMTU (~1200 bytes).
-        // Each Ghost is ~32 bytes data + 64 bytes sig + FlatBuffer overhead ~= 150 bytes.
-        // 3 entities = ~450 bytes + header. Safe within any MTU.
         const BATCH_SIZE: usize = 3;
-
-        // Debug Log
-        // if !entities.is_empty() && !self.connections.is_empty() {
-        // println!(
-        //     "[Zeus] Broadcasting {} entities to {} clients",
-        //     entities.len(),
-        //     self.connections.len()
-        // );
-        // }
 
         let mut dead_indices: Vec<usize> = Vec::new();
 
@@ -292,7 +238,6 @@ impl ZeusEngine {
             builder.reset();
             let mut ghosts = Vec::new();
 
-            // Initialize serializer with our key (reused for efficiency if moved out, but here we can just new/set)
             let mut serializer = zeus_common::GhostSerializer::new();
             serializer.set_keypair(self.signing_key.clone());
 
@@ -300,7 +245,7 @@ impl ZeusEngine {
                 let pos = Vec3::new(entity.pos.0, entity.pos.1, entity.pos.2);
                 let vel = Vec3::new(entity.vel.0, entity.vel.1, entity.vel.2);
 
-                // Sign payload
+                use zeus_common::Signer;
                 let mut data = Vec::with_capacity(32);
                 data.extend_from_slice(&entity.id.to_le_bytes());
                 data.extend_from_slice(&entity.pos.0.to_le_bytes());
@@ -310,7 +255,6 @@ impl ZeusEngine {
                 data.extend_from_slice(&entity.vel.1.to_le_bytes());
                 data.extend_from_slice(&entity.vel.2.to_le_bytes());
 
-                use zeus_common::Signer;
                 let sig_bytes = self.signing_key.sign(&data).to_bytes();
                 let sig = builder.create_vector(&sig_bytes);
 
@@ -337,17 +281,13 @@ impl ZeusEngine {
             builder.finish(update_msg, None);
             let bytes = builder.finished_data();
 
-            // Send to all connections
-            // Header 0xCC for StateUpdate
             let mut payload = Vec::with_capacity(1 + bytes.len());
             payload.push(0xCC);
             payload.extend_from_slice(bytes);
 
             for (i, conn) in self.connections.iter().enumerate() {
                 match conn.send_datagram(payload.clone().into()) {
-                    Ok(_) => {
-                        // println!("[Zeus] Sent packet: {} bytes", payload.len());
-                    }
+                    Ok(_) => {}
                     Err(e) => {
                         println!("[Zeus] Send Error to {}: {}", conn.remote_address(), e);
                         dead_indices.push(i);
@@ -356,8 +296,6 @@ impl ZeusEngine {
             }
         }
 
-        // Remove dead connections — deduplicate and sort descending to avoid
-        // swap_remove corrupting indices (each dead index appears once per chunk).
         dead_indices.sort_unstable();
         dead_indices.dedup();
         for index in dead_indices.iter().rev() {
@@ -369,7 +307,6 @@ impl ZeusEngine {
     }
 }
 
-// Helper need to be moved to lib or made public?
 fn build_handoff_msg(id: u64, msg_type: HandoffType, node: &NodeActor) -> Vec<u8> {
     use zeus_common::flatbuffers::FlatBufferBuilder;
     let mut builder = FlatBufferBuilder::new();
