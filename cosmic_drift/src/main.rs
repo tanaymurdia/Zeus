@@ -138,10 +138,6 @@ fn move_player(
     input: Res<ButtonInput<KeyCode>>,
     mut query: Query<&mut ExternalImpulse, With<PlayerShip>>,
 ) {
-    // We need to add ExternalImpulse component to spawn or use Velocity directly?
-    // Using Impulse is better for physics-based movement.
-    // Let's modify spawn to include ExternalImpulse.
-
     for mut impulse in query.iter_mut() {
         let thrust = 50.0;
         let mut force = Vec3::ZERO;
@@ -170,14 +166,12 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Camera (follows player)
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(10.0, 50.0, 50.0).looking_at(Vec3::new(10.0, 0.0, 0.0), Vec3::Y),
         MainCamera,
     ));
 
-    // Player Ship (Sphere for now)
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(1.0).mesh())),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -229,21 +223,17 @@ fn spawn_entities_on_keypress(
         return;
     }
 
-    // Get player position to spawn NPCs near them
     let base_pos = player_query
         .get_single()
         .map(|t| t.translation)
         .unwrap_or(Vec3::new(10.0, 2.0, 0.0));
 
-    // Pre-create shared assets for efficiency
     let mesh = meshes.add(Sphere::new(0.3).mesh());
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.5, 0.0), // Orange NPCs
         emissive: LinearRgba::rgb(1.0, 0.3, 0.0),
         ..default()
     });
-    // Only spawn a few VISUAL entities (max 50) to avoid killing performance
-    // The rest are "virtual" - counted but not rendered
     let visual_limit = 50;
     let already_visual = counter.count.min(visual_limit as u64);
     let can_spawn_visual = (visual_limit as u64).saturating_sub(already_visual) as u64;

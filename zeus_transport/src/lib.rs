@@ -116,21 +116,15 @@ pub fn make_promiscuous_endpoint(
 ) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
     let (server_config, cert_der) = configure_server()?;
 
-    // Configure "Trust All" Client via Rustls
     let roots = rustls::RootCertStore::empty();
     let mut rustls_config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
 
-    // Override verifier
     rustls_config
         .dangerous()
         .set_certificate_verifier(Arc::new(SkipServerVerification));
 
-    // Wrap for Quinn
-    // Note: quinn::ClientConfig::new takes Arc<dyn quinn::crypto::ClientConfig>
-    // quinn::crypto::rustls::QuicClientConfig implements that.
-    // We try to use the convenience struct if available or construct it.
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)?;
     let mut client_config = ClientConfig::new(Arc::new(crypto));
 
@@ -166,8 +160,6 @@ mod tests {
         let result = make_promiscuous_endpoint(addr);
         assert!(result.is_ok());
         let (endpoint, _) = result.unwrap();
-        // Should have both server and client capabilities
-        // assert!(endpoint.client_config().is_some()); // Config not exposed in API
         endpoint.close(0u32.into(), b"test done");
     }
 }

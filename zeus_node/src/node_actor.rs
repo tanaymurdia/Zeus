@@ -4,7 +4,7 @@ use zeus_common::{HandoffMsg, HandoffType};
 
 pub struct NodeActor {
     pub manager: EntityManager,
-    pub outgoing_messages: VecDeque<(u64, HandoffType)>, // (EntityID, Type)
+    pub outgoing_messages: VecDeque<(u64, HandoffType)>,
 }
 
 impl NodeActor {
@@ -19,8 +19,6 @@ impl NodeActor {
         let candidates = self.manager.update(dt);
 
         for id in candidates {
-            // Initiate Handoff: Local -> HandoffOut
-            // In a real system, we'd check if we have a connection to the neighbor first.
             self.manager.set_state(id, AuthorityState::HandoffOut);
             self.outgoing_messages.push_back((id, HandoffType::Offer));
             // println!("[Node] Entity {} crossing boundary. Sending OFFER.", id);
@@ -29,7 +27,6 @@ impl NodeActor {
 
     pub fn handle_handoff_msg(&mut self, msg: HandoffMsg) {
         let id = msg.entity_id();
-        // Fetch current state and key if available
         let (current_state, known_key) = if let Some(e) = self.manager.get_entity(id) {
             (Some(e.state.clone()), e.verifying_key)
         } else {
@@ -38,7 +35,6 @@ impl NodeActor {
 
         match msg.type_() {
             HandoffType::Offer => {
-                // Determine if this is a NEW offer or an UPDATE
                 let is_new = self.manager.get_entity(id).is_none();
                 let is_local = matches!(current_state, Some(AuthorityState::Local));
 
@@ -69,8 +65,6 @@ impl NodeActor {
                         self.manager.add_entity(e); // Updates existing
                     // No ACK for client updates
                     } else {
-                        // HANDOFF REQUEST (or New Client)
-                        // println!("[Node] Adding/Updating entity {} (Remote Offer)", id);
                         let entity = Entity {
                             id,
                             pos: (pos.x(), pos.y(), pos.z()),
@@ -111,7 +105,7 @@ mod tests {
     use zeus_common::{GhostArgs, Vec3};
 
     // Helper to create dummy HandoffMsg
-    fn create_msg(id: u64, type_: HandoffType) -> HandoffMsg<'static> {
+    fn _create_msg(id: u64, type_: HandoffType) -> HandoffMsg<'static> {
         // We can't easily construct a Flatbuffers table owning its data in a simple function return without leaking builder
         // or using a specific test setup.
         // Instead, we will Mock the message handling by manually triggering the logic if possible,

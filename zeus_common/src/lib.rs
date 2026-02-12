@@ -33,7 +33,8 @@ impl GhostSerializer {
     pub fn generate_keypair() -> (SigningKey, VerifyingKey) {
         let mut bytes = [0u8; 32];
         use rand::RngCore;
-        rand::rng().fill_bytes(&mut bytes);
+        let mut rng = rand::rng();
+        rng.fill_bytes(&mut bytes);
         let signing_key = SigningKey::from_bytes(&bytes);
         let verifying_key = signing_key.verifying_key();
         (signing_key, verifying_key)

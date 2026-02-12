@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorityState {
-    Local,      // Simulating
-    HandoffOut, // Sent Offer, Waiting for Ack
-    Remote,     // Just observing (Ghost)
-    HandoffIn,  // Received Offer, Sent Ack, Waiting for Commit
+    Local,
+    HandoffOut,
+    Remote,
+    HandoffIn,
 }
 
 use ed25519_dalek::VerifyingKey;
@@ -62,7 +62,6 @@ impl EntityManager {
 
         for entity in self.entities.values_mut() {
             if entity.state == AuthorityState::Local {
-                // Physics Update
                 entity.pos.0 += entity.vel.0 * dt;
                 entity.pos.1 += entity.vel.1 * dt;
                 entity.pos.2 += entity.vel.2 * dt;
@@ -75,8 +74,6 @@ impl EntityManager {
                     handoff_candidates.push(entity.id);
                 }
             } else if entity.state == AuthorityState::HandoffOut {
-                // Continue simulation logic during handoff?
-                // Usually yes, effectively "Predictive" until full swap.
                 entity.pos.0 += entity.vel.0 * dt;
                 entity.pos.1 += entity.vel.1 * dt;
                 entity.pos.2 += entity.vel.2 * dt;

@@ -54,7 +54,6 @@ pub struct ZeusEngine {
 
 impl ZeusEngine {
     pub async fn new(config: ZeusConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        // 1. Setup Networking
         println!(
             "[Zeus] Setup Networking: Binding to {}...",
             config.bind_addr
@@ -64,7 +63,6 @@ impl ZeusEngine {
 
         let (tx, rx) = mpsc::channel(100);
 
-        // 2. Accept Loop
         let endpoint_clone = endpoint.clone();
         let tx_accept = tx.clone();
         tokio::spawn(async move {
@@ -78,7 +76,6 @@ impl ZeusEngine {
             }
         });
 
-        // 3. Connect to Seed (if any)
         if let Some(seed_addr) = config.seed_addr {
             println!("[Zeus] Connecting to Seed {}...", seed_addr);
             let connection = endpoint.connect(seed_addr, "localhost")?.await?;
@@ -86,7 +83,6 @@ impl ZeusEngine {
             tx.send(NetworkEvent::NewConnection(connection)).await?;
         }
 
-        // 4. Initialize Actors
         let local_id = rand::random();
 
         let (signing_key, _) = zeus_common::GhostSerializer::generate_keypair();
@@ -115,8 +111,6 @@ impl ZeusEngine {
                 entity.vel = vel;
             }
         } else {
-            // New entity (spawned locally)?
-            // If unknown, treat as Local spawn
             self.node.manager.add_entity(Entity {
                 id,
                 pos,
@@ -135,21 +129,17 @@ impl ZeusEngine {
     pub async fn tick(&mut self, dt: f32) -> Result<Vec<ZeusEvent>, Box<dyn std::error::Error>> {
         let mut app_events = Vec::new();
 
-        // 1. Logic Update
         self.node.update(dt);
         self.discovery.update(dt);
 
-        // Update Local Load
         let total_entities = self.node.manager.entity_count() as u16;
         self.discovery.set_load(total_entities, 0);
 
-        // 2. Handle Network Events (Non-blocking)
         while let Ok(event) = self.network_rx.try_recv() {
             match event {
                 NetworkEvent::NewConnection(conn) => {
                     println!("[Zeus] New Connection from {}", conn.remote_address());
                     self.connections.push(conn.clone());
-                    // Spawn Reader
                     let tx_reader = self.network_tx.clone();
                     let conn_reader = conn.clone();
                     tokio::spawn(async move {
@@ -181,7 +171,7 @@ impl ZeusEngine {
                                             // println!("[Zeus] Received Datagram: {} bytes from {}", bytes.len(), conn_reader.remote_address());
                                             let _ = tx_reader.send(NetworkEvent::Payload(conn_reader.clone(), bytes.to_vec(), false)).await;
                                         }
-                                        Err(e) => {
+                                        Err(_e) => {
                                              // eprintln!("[Zeus] Read Error: {}", e);
                                              break;
                                         }
@@ -194,22 +184,18 @@ impl ZeusEngine {
                 NetworkEvent::Payload(conn, bytes, is_stream) => {
                     if is_stream {
                         if let Ok(msg) = zeus_common::flatbuffers::root::<HandoffMsg>(&bytes) {
-                            // ... existing logic ...
                             let id = msg.entity_id();
                             let old_state =
                                 self.node.manager.get_entity(id).map(|e| e.state.clone());
-                            let old_pos = self.node.manager.get_entity(id).map(|e| e.pos.clone());
 
                             self.node.handle_handoff_msg(msg);
 
                             let new_state =
                                 self.node.manager.get_entity(id).map(|e| e.state.clone());
-                            let new_pos = self.node.manager.get_entity(id).map(|e| e.pos.clone());
 
                             // Detect transitions for App Events
                             if let Some(new_st) = new_state {
                                 if old_state.is_none() && new_st == AuthorityState::Local {
-                                    // Arrived (or spawned via net?)
                                     if let Some(e) = self.node.manager.get_entity(id) {
                                         app_events.push(ZeusEvent::EntityArrived {
                                             id: e.id,
@@ -220,14 +206,9 @@ impl ZeusEngine {
                                 } else if old_state == Some(AuthorityState::HandoffOut)
                                     && new_st == AuthorityState::Remote
                                 {
-                                    // Departed
                                     app_events.push(ZeusEvent::EntityDeparted { id });
                                 } else if new_st == AuthorityState::Local {
-                                    // Remote Update (Client input)
                                     if let Some(e) = self.node.manager.get_entity(id) {
-                                        // Emit update if position changed significantly? Or always?
-                                        // Always emit for client control sync
-                                        // println!("[Zeus] Remote Update from ID {}", id);
                                         app_events.push(ZeusEvent::RemoteUpdate {
                                             id: e.id,
                                             pos: e.pos,
@@ -258,11 +239,8 @@ impl ZeusEngine {
             }
         }
 
-        // 3. Outgoing Handoffs
         while let Some((id, msg_type)) = self.node.outgoing_messages.pop_front() {
             let msg_bytes = build_handoff_msg(id, msg_type, &self.node);
-            // Broadcast to all neighbors (Naive)
-            use tokio::io::AsyncWriteExt;
             for conn in &self.connections {
                 if let Ok(mut stream) = conn.open_uni().await {
                     let _ = stream.write_all(&msg_bytes).await;
@@ -271,8 +249,6 @@ impl ZeusEngine {
             }
         }
 
-        // 4. Outgoing Discovery Announce & Heartbeats
-        // Rate limit: 1/60 chance per tick
         if rand::random::<f32>() < 0.016 {
             let announce = self.discovery.generate_announce();
             for conn in &self.connections {
@@ -310,11 +286,9 @@ impl ZeusEngine {
         // );
         // }
 
-        // Prune dead connection indices
         let mut dead_indices: Vec<usize> = Vec::new();
 
         for chunk in entities.chunks(BATCH_SIZE) {
-            // Reset builder for new packet
             builder.reset();
             let mut ghosts = Vec::new();
 
@@ -323,8 +297,6 @@ impl ZeusEngine {
             serializer.set_keypair(self.signing_key.clone());
 
             for entity in chunk {
-                // Generate valid signed ghost using the serializer helper
-
                 let pos = Vec3::new(entity.pos.0, entity.pos.1, entity.pos.2);
                 let vel = Vec3::new(entity.vel.0, entity.vel.1, entity.vel.2);
 

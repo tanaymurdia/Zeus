@@ -15,7 +15,7 @@ struct Cli {
     mode: Mode,
 }
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Subcommand)]
 enum Mode {
@@ -422,9 +422,6 @@ async fn run_orchestrator(
     bind: SocketAddr,
     max_nodes: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::io::BufReader;
-    use tokio::process::Command;
-
     println!("╔════════════════════════════════════════════════════════╗");
     println!("║       ZEUS AUTO-SCALING ORCHESTRATOR                   ║");
     println!("╠════════════════════════════════════════════════════════╣");

@@ -252,7 +252,7 @@ impl PhysicsWorld {
     }
 
     // Get individual ball state
-    fn get_ball_state(&self, id: u64) -> Option<((f32, f32, f32), (f32, f32, f32))> {
+    fn _get_ball_state(&self, id: u64) -> Option<((f32, f32, f32), (f32, f32, f32))> {
         self.balls.get(&id).and_then(|ball| {
             self.rigid_body_set.get(ball.rigid_body_handle).map(|rb| {
                 let pos = rb.translation();
@@ -289,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
-    use tokio::process::{ChildStderr, ChildStdout};
+    use tokio::process::ChildStdout;
 
     println!("╔════════════════════════════════════════════════════════╗");
     println!("║       COSMIC DRIFT PHYSICS ORCHESTRATOR                ║");
@@ -297,7 +297,7 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
     println!("╚════════════════════════════════════════════════════════╝");
 
     let mut nodes = Vec::new();
-    let mut next_id = 0;
+    let mut _next_id = 0;
 
     // Topology:
     // Node 0: Bound 20, Peer -> Node 1 (if exists?)
@@ -370,7 +370,7 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
     monitor_node(1, child1.stdout.take(), child1.stderr.take());
     nodes.push(child1);
 
-    next_id = 2;
+    _next_id = 2;
 
     println!("[Orchestrator] Chain Active: Node 0 -> Node 1");
     println!("[Orchestrator] Press Ctrl+C to stop.");
@@ -501,7 +501,7 @@ async fn run_physics_node(
 
         {
             let world = physics.read().await;
-            let positions = world.get_positions();
+            let _positions = world.get_positions();
             let ball_count = world.ball_count();
 
             // 1. Status

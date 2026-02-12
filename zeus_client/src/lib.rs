@@ -73,13 +73,11 @@ impl ZeusClient {
         vel: (f32, f32, f32),
     ) -> Result<(), ClientError> {
         if let Some(conn) = &self.connection {
-            // 1. Serialize Signed Update
             let mut serializer = GhostSerializer::new();
             serializer.set_keypair(self.signing_key.clone());
 
             let msg_bytes = serializer.serialize(self.local_id, pos, vel);
 
-            // 2. Send Stream
             let mut stream = conn.open_uni().await?;
             stream.write_all(&msg_bytes).await?;
             stream.finish()?;
@@ -90,7 +88,7 @@ impl ZeusClient {
     /// Try to read server status datagram (non-blocking poll)
     /// Returns Option<(entity_count, node_count)>
     pub fn try_read_server_status(&self) -> Option<(u16, u8)> {
-        if let Some(conn) = &self.connection {
+        if let Some(_conn) = &self.connection {
             // Try to read a datagram (non-blocking check not directly available)
             // We'll rely on the game loop calling this periodically
             // For now, return None - the async version will be used
