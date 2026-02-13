@@ -51,6 +51,10 @@ impl ZeusClient {
         self.local_id
     }
 
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
     pub async fn connect(&mut self, seed: SocketAddr) -> Result<(), ClientError> {
         let connection = self.endpoint.connect(seed, "localhost")?.await?;
         self.connection = Some(connection);

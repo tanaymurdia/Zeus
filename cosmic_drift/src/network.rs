@@ -48,12 +48,20 @@ fn generate_snapshots(
     }
 
     let now = std::time::Instant::now();
-    let stale_threshold = std::time::Duration::from_millis(300);
+    let stale_threshold = std::time::Duration::from_secs(5);
     map_lock.retain(|_, (_, _, last_seen)| now.duration_since(*last_seen) < stale_threshold);
 
     let new_positions: std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))> = map_lock
         .iter()
-        .map(|(&id, &(pos, vel, _))| (id, (pos, vel)))
+        .map(|(&id, &(pos, vel, last_seen))| {
+            let dt = now.duration_since(last_seen).as_secs_f32().min(0.05);
+            let extrapolated = (
+                pos.0 + vel.0 * dt,
+                pos.1 + vel.1 * dt,
+                pos.2 + vel.2 * dt,
+            );
+            (id, (extrapolated, vel))
+        })
         .collect();
 
     drop(map_lock);
@@ -82,10 +90,6 @@ pub struct ServerStatus {
 }
 
 impl ServerStatus {
-    pub fn get_entity_count(&self) -> u16 {
-        self.entity_count.load(Ordering::Relaxed)
-    }
-
     pub fn get_node_count(&self) -> u8 {
         self.node_count.load(Ordering::Relaxed)
     }
@@ -136,11 +140,25 @@ fn send_player_state(
         );
         let vel = (velocity.linvel.x, velocity.linvel.y, velocity.linvel.z);
 
+        let conns = net.all_connections.clone();
         let client_lock = net.client.as_ref().unwrap().clone();
         let rt_handle = net.runtime.handle().clone();
         rt_handle.spawn(async move {
-            let client = client_lock.lock().await;
-            let _ = client.send_state(pos, vel).await;
+            let msg_bytes = {
+                let client = client_lock.lock().await;
+                let mut serializer = zeus_common::GhostSerializer::new();
+                serializer.set_keypair(client.signing_key().clone());
+                serializer.serialize(client.local_id(), pos, vel).to_vec()
+            };
+            let conn_list: Vec<quinn::Connection> = {
+                conns.lock().map(|g| g.clone()).unwrap_or_default()
+            };
+            for conn in &conn_list {
+                if let Ok(mut stream) = conn.open_uni().await {
+                    let _ = stream.write_all(&msg_bytes).await;
+                    let _ = stream.finish();
+                }
+            }
         });
     }
 }
@@ -159,7 +177,7 @@ pub struct NetworkResource {
 
     pub accumulated:
         Option<Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32), std::time::Instant)>>>>,
-    pub current_zone: usize,
+    pub all_connections: Arc<std::sync::Mutex<Vec<quinn::Connection>>>,
 }
 
 impl Default for NetworkResource {
@@ -168,7 +186,7 @@ impl Default for NetworkResource {
             client: None,
             runtime: Runtime::new().unwrap(),
             accumulated: None,
-            current_zone: 0,
+            all_connections: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -213,88 +231,155 @@ fn setup_network(
     let accumulated_positions_bb = accumulated_state.player_entity_ids.clone();
     net.accumulated = Some(accumulated_positions.clone());
 
-    let client_clone = client.clone();
-    rt_handle.spawn(async move {
-        let accumulated_positions_bb = accumulated_positions_bb;
-        let addr: std::net::SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        {
-            let mut locked_client = client_clone.lock().await;
-            if let Err(e) = locked_client.connect(addr).await {
-                eprintln!("[Net] Connection failed: {}", e);
-                return;
-            }
-        }
+    let connected_ports: Arc<std::sync::Mutex<std::collections::HashSet<u16>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let all_connections = net.all_connections.clone();
 
-        loop {
-            let conn = {
-                let client = client_clone.lock().await;
-                client.connection()
-            };
+    let spawn_reader_for_port = {
+        let client_clone = client.clone();
+        let entity_count = entity_count.clone();
+        let node_count = node_count.clone();
+        let map_width = map_width.clone();
+        let ball_radius = ball_radius.clone();
+        let accumulated_positions = accumulated_positions.clone();
+        let accumulated_positions_bb = accumulated_positions_bb.clone();
+        let connected_ports = connected_ports.clone();
+        let all_connections = all_connections.clone();
 
-            if let Some(conn) = conn {
-                match conn.read_datagram().await {
-                    Ok(data) => {
-                        let data = data.to_vec();
-                        if data.len() >= 4 && data[0] == 0xAA {
-                            let entities = ((data[1] as u16) << 8) | (data[2] as u16);
-                            let nodes = data[3];
-                            entity_count.store(entities, Ordering::Relaxed);
-                            node_count.store(nodes, Ordering::Relaxed);
+        move |port: u16, rt_handle: tokio::runtime::Handle| {
+            let client_for_port = client_clone.clone();
+            let entity_count = entity_count.clone();
+            let node_count = node_count.clone();
+            let map_width = map_width.clone();
+            let ball_radius = ball_radius.clone();
+            let accumulated_positions = accumulated_positions.clone();
+            let accumulated_positions_bb = accumulated_positions_bb.clone();
+            let connected_ports = connected_ports.clone();
+            let all_connections = all_connections.clone();
 
-                            if data.len() >= 6 {
-                                map_width.store(data[4], Ordering::Relaxed);
-                                ball_radius.store(data[5], Ordering::Relaxed);
+            rt_handle.spawn(async move {
+                let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+                let endpoint = {
+                    let c = client_for_port.lock().await;
+                    c.endpoint().clone()
+                };
+
+                for attempt in 0..10u32 {
+                    match endpoint.connect(addr, "localhost") {
+                Ok(connecting) => {
+                    match connecting.await {
+                        Ok(conn) => {
+                            if let Ok(mut ports) = connected_ports.lock() {
+                                ports.insert(port);
                             }
-                        } else if data.len() >= 1 && data[0] == 0xCC {
-                            let bytes = &data[1..];
-                            if let Ok(update) =
-                                zeus_common::flatbuffers::root::<zeus_common::StateUpdate>(bytes)
-                            {
-                                if let Some(ghosts) = update.ghosts() {
-                                    if let Ok(mut map) = accumulated_positions.lock() {
-                                        let now = std::time::Instant::now();
-                                        for ghost in ghosts {
-                                            let id = ghost.entity_id();
-                                            let pos = ghost
-                                                .position()
-                                                .map(|p| (p.x(), p.y(), p.z()))
-                                                .unwrap_or((0.0, 0.0, 0.0));
-                                            let vel = ghost
-                                                .velocity()
-                                                .map(|v| (v.x(), v.y(), v.z()))
-                                                .unwrap_or((0.0, 0.0, 0.0));
-                                            map.insert(id, (pos, vel, now));
+                            if let Ok(mut conns) = all_connections.lock() {
+                                conns.push(conn.clone());
+                            }
+                                    loop {
+                                        match conn.read_datagram().await {
+                                            Ok(data) => {
+                                                let data = data.to_vec();
+                                                if data.len() >= 4 && data[0] == 0xAA {
+                                                    let entities = ((data[1] as u16) << 8) | (data[2] as u16);
+                                                    let nodes = data[3];
+                                                    entity_count.store(entities, Ordering::Relaxed);
+                                                    let prev = node_count.load(Ordering::Relaxed);
+                                                    if nodes > prev {
+                                                        node_count.store(nodes, Ordering::Relaxed);
+                                                    }
+                                                    if data.len() >= 6 {
+                                                        map_width.store(data[4], Ordering::Relaxed);
+                                                        ball_radius.store(data[5], Ordering::Relaxed);
+                                                    }
+                                                } else if data.len() >= 3 && data[0] == 0xCC {
+                                                    if let Ok(mut map) = accumulated_positions.lock() {
+                                                        let now = std::time::Instant::now();
+                                                        let count = u16::from_le_bytes([data[1], data[2]]) as usize;
+                                                        let mut offset = 3usize;
+                                                        for _ in 0..count {
+                                                            if offset + 15 > data.len() { break; }
+                                                            let id = u64::from_le_bytes([
+                                                                data[offset], data[offset+1], data[offset+2], data[offset+3],
+                                                                data[offset+4], data[offset+5], data[offset+6], data[offset+7],
+                                                            ]);
+                                                            offset += 8;
+                                                            let flags = data[offset];
+                                                            offset += 1;
+                                                            let px = i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 500.0;
+                                                            offset += 2;
+                                                            let py = i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 500.0;
+                                                            offset += 2;
+                                                            let pz = i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 500.0;
+                                                            offset += 2;
+                                                            let (vx, vy, vz) = if flags & 1 == 0 {
+                                                                if offset + 6 > data.len() { break; }
+                                                                let vx = i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 100.0;
+                                                                offset += 2;
+                                                                let vy = i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 100.0;
+                                                                offset += 2;
+                                                                let vz = i16::from_le_bytes([data[offset], data[offset+1]]) as f32 / 100.0;
+                                                                offset += 2;
+                                                                (vx, vy, vz)
+                                                            } else {
+                                                                (0.0, 0.0, 0.0)
+                                                            };
+                                                            map.insert(id, ((px, py, pz), (vx, vy, vz), now));
+                                                        }
+                                                    }
+                                                } else if data.len() >= 3 && data[0] == 0xBB {
+                                                    let count = ((data[1] as u16) << 8) | (data[2] as u16);
+                                                    let mut offset = 3;
+                                                    if let Ok(mut set) = accumulated_positions_bb.lock() {
+                                                        for _ in 0..count {
+                                                            if offset + 8 <= data.len() {
+                                                                let id = u64::from_le_bytes(
+                                                                    data[offset..offset + 8].try_into().unwrap(),
+                                                                );
+                                                                set.insert(id);
+                                                                offset += 8;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => break,
                                         }
                                     }
+                                    return;
                                 }
-                            }
-                        } else if data.len() >= 3 && data[0] == 0xBB {
-                            let count =
-                                ((data[1] as u16) << 8) | (data[2] as u16);
-                            let mut ids = std::collections::HashSet::new();
-                            let mut offset = 3;
-                            for _ in 0..count {
-                                if offset + 8 <= data.len() {
-                                    let id = u64::from_le_bytes(
-                                        data[offset..offset + 8].try_into().unwrap(),
-                                    );
-                                    ids.insert(id);
-                                    offset += 8;
-                                }
-                            }
-                            if let Ok(mut set) =
-                                accumulated_positions_bb.lock()
-                            {
-                                *set = ids;
+                                Err(_) => {}
                             }
                         }
+                        Err(_) => {}
                     }
-                    Err(_) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                }
+            });
+        }
+    };
+
+    let spawn_reader = spawn_reader_for_port.clone();
+    let rth = rt_handle.clone();
+    spawn_reader(5000, rth);
+
+    let spawn_reader_for_new = spawn_reader_for_port;
+    let node_count_poll = status.node_count.clone();
+    let connected_ports_poll = connected_ports.clone();
+    rt_handle.spawn(async move {
+        let mut last_count = 1u8;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let current = node_count_poll.load(Ordering::Relaxed);
+            if current > last_count {
+                for i in last_count..current {
+                    let port = 5000 + i as u16;
+                    let already = connected_ports_poll.lock().map(|s| s.contains(&port)).unwrap_or(false);
+                    if !already {
+                        let rth = tokio::runtime::Handle::current();
+                        spawn_reader_for_new(port, rth);
                     }
                 }
-            } else {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                last_count = current;
             }
         }
     });

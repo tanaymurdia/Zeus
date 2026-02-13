@@ -39,6 +39,9 @@ enum Commands {
 
         #[arg(long)]
         peer: Option<SocketAddr>,
+
+        #[arg(long)]
+        peers: Option<String>,
     },
 }
 
@@ -73,44 +76,40 @@ impl PhysicsWorld {
         let mut collider_set = ColliderSet::new();
 
         let ground = RigidBodyBuilder::fixed()
-            .translation(vector![0.0, -1.0, 0.0])
+            .translation(vector![12.0, -1.0, 0.0])
             .build();
         let ground_handle = rigid_body_set.insert(ground);
-        let ground_collider = ColliderBuilder::cuboid(500.0, 0.1, 500.0) // Thickness 0.1 -> surface at -0.9
-            .restitution(0.5)
+        let ground_collider = ColliderBuilder::cuboid(500.0, 0.1, 500.0)
+            .restitution(0.2)
             .friction(0.0)
             .build();
         collider_set.insert_with_parent(ground_collider, ground_handle, &mut rigid_body_set);
 
-        // Add enclosure walls (Front/Back)
         let wall_front = RigidBodyBuilder::fixed()
-            .translation(vector![0.0, 5.0, 12.0])
+            .translation(vector![12.0, 5.0, 14.0])
             .build();
         let wall_back = RigidBodyBuilder::fixed()
-            .translation(vector![0.0, 5.0, -12.0])
+            .translation(vector![12.0, 5.0, -14.0])
             .build();
         let h_front = rigid_body_set.insert(wall_front);
         let h_back = rigid_body_set.insert(wall_back);
 
-        let wall_col = ColliderBuilder::cuboid(500.0, 10.0, 2.0).build();
-        collider_set.insert_with_parent(wall_col.clone(), h_front, &mut rigid_body_set);
-        collider_set.insert_with_parent(wall_col, h_back, &mut rigid_body_set);
+        let wall_fb_col = ColliderBuilder::cuboid(500.0, 10.0, 2.0).build();
+        collider_set.insert_with_parent(wall_fb_col.clone(), h_front, &mut rigid_body_set);
+        collider_set.insert_with_parent(wall_fb_col, h_back, &mut rigid_body_set);
 
-        // Add enclosure walls (Left/Right)
         let wall_left = RigidBodyBuilder::fixed()
-            .translation(vector![0.0, 5.0, 0.0])
-            .rotation(vector![0.0, 1.5708, 0.0])
+            .translation(vector![-0.5, 5.0, 0.0])
             .build();
         let wall_right = RigidBodyBuilder::fixed()
-            .translation(vector![24.0, 5.0, 0.0])
-            .rotation(vector![0.0, 1.5708, 0.0])
-            .build(); // 4 nodes * 6 width = 24
+            .translation(vector![24.5, 5.0, 0.0])
+            .build();
         let h_left = rigid_body_set.insert(wall_left);
         let h_right = rigid_body_set.insert(wall_right);
 
-        let wall_side_col = ColliderBuilder::cuboid(500.0, 10.0, 2.0).build();
-        collider_set.insert_with_parent(wall_side_col.clone(), h_left, &mut rigid_body_set);
-        collider_set.insert_with_parent(wall_side_col, h_right, &mut rigid_body_set);
+        let wall_lr_col = ColliderBuilder::cuboid(0.5, 10.0, 15.0).build();
+        collider_set.insert_with_parent(wall_lr_col.clone(), h_left, &mut rigid_body_set);
+        collider_set.insert_with_parent(wall_lr_col, h_right, &mut rigid_body_set);
 
         let mut character_controller = KinematicCharacterController::default();
         character_controller.offset = CharacterLength::Absolute(0.02);
@@ -357,27 +356,15 @@ impl PhysicsWorld {
             &(),
         );
 
+        let max_speed = 30.0_f32;
         for ball in self.balls.values() {
             if let Some(rb) = self.rigid_body_set.get_mut(ball.rigid_body_handle) {
                 if !rb.is_dynamic() {
                     continue;
                 }
-                let pos = *rb.translation();
                 let vel = *rb.linvel();
-                let max_speed = 30.0;
-                let clamped_vel = if vel.norm() > max_speed {
-                    vel.normalize() * max_speed
-                } else {
-                    vel
-                };
-                if pos.x < -1.0 || pos.x > 25.0 || pos.y < -5.0 || pos.y > 20.0 || pos.z < -14.0 || pos.z > 14.0 {
-                    let cx = pos.x.clamp(1.0, 23.0);
-                    let cy = 1.0;
-                    let cz = pos.z.clamp(-10.0, 10.0);
-                    rb.set_translation(vector![cx, cy, cz], true);
-                    rb.set_linvel(vector![0.0, 0.0, 0.0], true);
-                } else if clamped_vel != vel {
-                    rb.set_linvel(clamped_vel, true);
+                if vel.norm() > max_speed {
+                    rb.set_linvel(vel.normalize() * max_speed, true);
                 }
             }
         }
@@ -428,6 +415,10 @@ impl GameWorld for PhysicsWorld {
     fn get_entity_state(&self, id: u64) -> Option<((f32, f32, f32), (f32, f32, f32))> {
         self.get_ball_state(id)
     }
+
+    fn status_payload(&self) -> (u16, u8, u8) {
+        (0, 24, 8)
+    }
 }
 
 #[tokio::main]
@@ -441,8 +432,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id,
             boundary,
             peer,
-        }) => run_physics_node(bind, id, boundary, peer, cli.max_balls).await,
-        None => run_physics_node(cli.bind, 0, 20.0, None, cli.max_balls).await,
+            peers,
+        }) => {
+            let mut seed_addrs: Vec<SocketAddr> = Vec::new();
+            if let Some(peers_str) = peers {
+                for addr_str in peers_str.split(',') {
+                    if let Ok(addr) = addr_str.trim().parse::<SocketAddr>() {
+                        seed_addrs.push(addr);
+                    }
+                }
+            }
+            if let Some(p) = peer {
+                if !seed_addrs.contains(&p) {
+                    seed_addrs.push(p);
+                }
+            }
+            run_physics_node(bind, id, boundary, seed_addrs, cli.max_balls).await
+        }
+        None => run_physics_node(cli.bind, 0, 20.0, Vec::new(), cli.max_balls).await,
     }
 }
 
@@ -458,11 +465,12 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
 
     let mut nodes = Vec::new();
     let mut next_id = 1;
+    let mut active_ports: Vec<u16> = Vec::new();
 
-    let spawn_node = |id: u8, port: u16, boundary: f32, peer_port: Option<u16>| {
+    let spawn_node = |id: u8, port: u16, boundary: f32, peer_ports: &[u16]| {
         println!(
-            "[Orchestrator] Spawning Node {} (Bound={}) on port {} -> Peer {:?}",
-            id, boundary, port, peer_port
+            "[Orchestrator] Spawning Node {} (Bound={}) on port {} -> Peers {:?}",
+            id, boundary, port, peer_ports
         );
         let mut cmd = tokio::process::Command::new(std::env::current_exe().unwrap());
         cmd.arg("run-node")
@@ -473,8 +481,13 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
             .arg("--boundary")
             .arg(boundary.to_string());
 
-        if let Some(pp) = peer_port {
-            cmd.arg("--peer").arg(format!("127.0.0.1:{}", pp));
+        if !peer_ports.is_empty() {
+            let peers_str: String = peer_ports
+                .iter()
+                .map(|p| format!("127.0.0.1:{}", p))
+                .collect::<Vec<_>>()
+                .join(",");
+            cmd.arg("--peers").arg(peers_str);
         }
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -508,10 +521,11 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
         }
     };
 
-    let mut cmd0 = spawn_node(0, start_port, 24.0, None);
+    let mut cmd0 = spawn_node(0, start_port, 24.0, &[]);
     let mut child0 = cmd0.spawn()?;
     monitor_node(0, child0.stdout.take(), child0.stderr.take(), tx.clone());
     nodes.push(child0);
+    active_ports.push(start_port);
 
     println!("[Orchestrator] Chain Active: Node 0");
     println!("[Orchestrator] Autoscaling enabled. Press Ctrl+C to stop.");
@@ -529,12 +543,12 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
                     println!("[Orchestrator] ⚠️ SPLIT REQUEST from Node 0! Spawning Node {}...", next_id);
                     let port = start_port + next_id as u16;
                     let boundary = 24.0;
-                    let peer = port - 1;
 
-                    let mut cmd = spawn_node(next_id, port, boundary, Some(peer));
+                    let mut cmd = spawn_node(next_id, port, boundary, &active_ports);
                     if let Ok(mut child) = cmd.spawn() {
                         monitor_node(next_id, child.stdout.take(), child.stderr.take(), tx.clone());
                         nodes.push(child);
+                        active_ports.push(port);
                         next_id += 1;
                         last_spawn = std::time::Instant::now();
                     }
@@ -553,17 +567,17 @@ async fn run_physics_node(
     bind: SocketAddr,
     id: u8,
     boundary: f32,
-    peer: Option<SocketAddr>,
+    seed_addrs: Vec<SocketAddr>,
     _max_balls: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
-        "[Node {}] bind={} boundary={} peer={:?}",
-        id, bind, boundary, peer
+        "[Node {}] bind={} boundary={} peers={:?}",
+        id, bind, boundary, seed_addrs
     );
 
     let config = ZeusConfig {
         bind_addr: bind,
-        seed_addr: peer,
+        seed_addrs,
         boundary,
         margin: 1.0,
         ordinal: id as u32,
@@ -577,6 +591,7 @@ async fn run_physics_node(
     let dt = 1.0 / 128.0;
     let mut spawn_counter: u32 = 0;
     let mut diag_counter: u32 = 0;
+    let mut status_counter: u32 = 0;
     let mut last_split_request: usize = 0;
 
     loop {
@@ -607,18 +622,8 @@ async fn run_physics_node(
 
         if id == 0 {
             let total_balls = game_loop.engine.node.manager.entities.keys().filter(|id| **id < 1_000_000).count();
-            let current_nodes = game_loop.engine.discovery.total_node_count();
-            let desired_nodes = if total_balls >= 15 {
-                4
-            } else if total_balls >= 10 {
-                3
-            } else if total_balls >= 5 {
-                2
-            } else {
-                1
-            };
-            if desired_nodes > current_nodes && desired_nodes > last_split_request {
-                last_split_request = desired_nodes;
+            if game_loop.should_split(total_balls) && total_balls > last_split_request {
+                last_split_request = total_balls;
                 println!("REQUEST_SPLIT");
             }
         }
@@ -659,30 +664,9 @@ async fn run_physics_node(
             }
         }
 
-        let entity_count = game_loop.engine.node.manager.entities.len() as u16;
-        let active_nodes = game_loop.engine.discovery.total_node_count().max(1) as u8;
-        let status_bytes: [u8; 6] = [
-            0xAA,
-            (entity_count >> 8) as u8,
-            (entity_count & 0xFF) as u8,
-            active_nodes,
-            24,
-            8,
-        ];
-
-        let player_ids = game_loop.player_entity_ids();
-        let count = player_ids.len() as u16;
-        let mut bb_buf = Vec::with_capacity(3 + count as usize * 8);
-        bb_buf.push(0xBB);
-        bb_buf.push((count >> 8) as u8);
-        bb_buf.push((count & 0xFF) as u8);
-        for pid in &player_ids {
-            bb_buf.extend_from_slice(&pid.to_le_bytes());
-        }
-
-        for conn in &game_loop.engine.connections {
-            let _ = conn.send_datagram(status_bytes.to_vec().into());
-            let _ = conn.send_datagram(bb_buf.clone().into());
+        status_counter += 1;
+        if status_counter % 16 == 0 {
+            game_loop.broadcast_status();
         }
 
         let elapsed = loop_start.elapsed();

@@ -11,17 +11,21 @@ pub trait GameWorld: Send {
     fn on_entity_update(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32));
     fn locally_simulated_ids(&self) -> &HashSet<u64>;
     fn get_entity_state(&self, id: u64) -> Option<((f32, f32, f32), (f32, f32, f32))>;
+    fn status_payload(&self) -> (u16, u8, u8) {
+        (0, 24, 8)
+    }
 }
 
 pub struct GameLoop<W: GameWorld> {
     pub engine: ZeusEngine,
     pub world: W,
+    broadcast_counter: u32,
 }
 
 impl<W: GameWorld> GameLoop<W> {
     pub async fn new(config: ZeusConfig, world: W) -> Result<Self, Box<dyn std::error::Error>> {
         let engine = ZeusEngine::new(config).await?;
-        Ok(Self { engine, world })
+        Ok(Self { engine, world, broadcast_counter: 0 })
     }
 
     pub async fn tick(&mut self, dt: f32) -> Result<Vec<ZeusEvent>, Box<dyn std::error::Error>> {
@@ -81,10 +85,12 @@ impl<W: GameWorld> GameLoop<W> {
             }
         }
 
+        self.broadcast_counter += 1;
         self.engine.broadcast_state_to_clients().await;
-
-        let local_sim_for_peers = self.world.locally_simulated_ids().clone();
-        self.engine.broadcast_state_to_peers(&local_sim_for_peers);
+        if self.broadcast_counter % 4 == 0 {
+            let local_sim_for_peers = self.world.locally_simulated_ids().clone();
+            self.engine.broadcast_state_to_peers(&local_sim_for_peers);
+        }
 
         self.engine.cleanup_remote_states(std::time::Duration::from_millis(300));
 
@@ -114,6 +120,50 @@ impl<W: GameWorld> GameLoop<W> {
 
     pub fn set_lower_boundary(&mut self, lower_boundary: f32) {
         self.engine.set_lower_boundary(lower_boundary);
+    }
+
+    pub fn broadcast_status(&self) {
+        let entity_count = self.engine.node.manager.entities.len() as u16;
+        let active_nodes = self.engine.discovery.total_node_count().max(1) as u8;
+        let (custom_entity_count, map_width, ball_radius) = self.world.status_payload();
+        let ec = if custom_entity_count > 0 { custom_entity_count } else { entity_count };
+        let status_bytes: [u8; 6] = [
+            0xAA,
+            (ec >> 8) as u8,
+            (ec & 0xFF) as u8,
+            active_nodes,
+            map_width,
+            ball_radius,
+        ];
+
+        let player_ids = self.player_entity_ids();
+        let count = player_ids.len() as u16;
+        let mut bb_buf = Vec::with_capacity(3 + count as usize * 8);
+        bb_buf.push(0xBB);
+        bb_buf.push((count >> 8) as u8);
+        bb_buf.push((count & 0xFF) as u8);
+        for pid in &player_ids {
+            bb_buf.extend_from_slice(&pid.to_le_bytes());
+        }
+
+        for conn in &self.engine.client_connections {
+            let _ = conn.send_datagram(status_bytes.to_vec().into());
+            let _ = conn.send_datagram(bb_buf.clone().into());
+        }
+    }
+
+    pub fn should_split(&self, local_entity_count: usize) -> bool {
+        let current_nodes = self.engine.discovery.total_node_count();
+        let desired_nodes = if local_entity_count >= 15 {
+            4
+        } else if local_entity_count >= 10 {
+            3
+        } else if local_entity_count >= 5 {
+            2
+        } else {
+            1
+        };
+        desired_nodes > current_nodes
     }
 }
 
@@ -203,7 +253,7 @@ mod tests {
     async fn test_tick_calls_step() {
         let config = ZeusConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            seed_addr: None,
+            seed_addrs: Vec::new(),
             boundary: 100.0,
             margin: 5.0,
             ordinal: 0,
@@ -224,7 +274,7 @@ mod tests {
     async fn test_entity_arrived_routed() {
         let config = ZeusConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            seed_addr: None,
+            seed_addrs: Vec::new(),
             boundary: 100.0,
             margin: 5.0,
             ordinal: 0,
@@ -258,7 +308,7 @@ mod tests {
     async fn test_entity_departed_routed() {
         let config = ZeusConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            seed_addr: None,
+            seed_addrs: Vec::new(),
             boundary: 100.0,
             margin: 5.0,
             ordinal: 0,
@@ -282,7 +332,7 @@ mod tests {
     async fn test_external_entity_sync() {
         let config = ZeusConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            seed_addr: None,
+            seed_addrs: Vec::new(),
             boundary: 100.0,
             margin: 5.0,
             ordinal: 0,
@@ -335,7 +385,7 @@ mod tests {
     async fn test_local_entity_readback() {
         let config = ZeusConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            seed_addr: None,
+            seed_addrs: Vec::new(),
             boundary: 100.0,
             margin: 5.0,
             ordinal: 0,
@@ -374,7 +424,7 @@ mod tests {
     async fn test_player_entity_ids() {
         let config = ZeusConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            seed_addr: None,
+            seed_addrs: Vec::new(),
             boundary: 100.0,
             margin: 5.0,
             ordinal: 0,
@@ -384,7 +434,7 @@ mod tests {
         let mock = MockGameWorld::new().with_local_ids(local_ids);
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
 
-        for id in [1, 2, 3, 100, 200] {
+        for id in [1, 2, 3, 1_000_100, 1_000_200] {
             game_loop.engine.node.manager.add_entity(crate::entity_manager::Entity {
                 id,
                 pos: (0.0, 0.0, 0.0),
@@ -396,6 +446,6 @@ mod tests {
 
         let mut player_ids = game_loop.player_entity_ids();
         player_ids.sort();
-        assert_eq!(player_ids, vec![100, 200]);
+        assert_eq!(player_ids, vec![1_000_100, 1_000_200]);
     }
 }

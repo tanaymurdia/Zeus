@@ -75,58 +75,58 @@ fn setup_visuals(
 ) {
     commands.insert_resource(FloorZoneState::default());
 
-    let floor_depth = 30.0;
+    let floor_depth = 28.0;
 
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(24.0, 10.0, 0.3))),
+        Mesh3d(meshes.add(Cuboid::new(24.0, 10.0, 4.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE.with_alpha(0.05),
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(12.0, 5.0, -12.0),
+        Transform::from_xyz(12.0, 5.0, -14.0),
         RigidBody::Fixed,
-        Collider::cuboid(12.0, 5.0, 0.15),
+        Collider::cuboid(12.0, 5.0, 2.0),
         WallSide::Back,
         StaticWall,
     ));
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(24.0, 10.0, 0.3))),
+        Mesh3d(meshes.add(Cuboid::new(24.0, 10.0, 4.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE.with_alpha(0.05),
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(12.0, 5.0, 12.0),
+        Transform::from_xyz(12.0, 5.0, 14.0),
         RigidBody::Fixed,
-        Collider::cuboid(12.0, 5.0, 0.15),
+        Collider::cuboid(12.0, 5.0, 2.0),
         WallSide::Front,
         StaticWall,
     ));
 
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(0.3, 10.0, 30.0))),
+        Mesh3d(meshes.add(Cuboid::new(1.0, 10.0, 30.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE.with_alpha(0.05),
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(0.0, 5.0, 0.0),
+        Transform::from_xyz(-0.5, 5.0, 0.0),
         RigidBody::Fixed,
-        Collider::cuboid(0.15, 5.0, 15.0),
+        Collider::cuboid(0.5, 5.0, 15.0),
         WallSide::Left,
         StaticWall,
     ));
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(0.3, 10.0, 30.0))),
+        Mesh3d(meshes.add(Cuboid::new(1.0, 10.0, 30.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE.with_alpha(0.05),
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(24.0, 5.0, 0.0),
+        Transform::from_xyz(24.5, 5.0, 0.0),
         RigidBody::Fixed,
-        Collider::cuboid(0.15, 5.0, 15.0),
+        Collider::cuboid(0.5, 5.0, 15.0),
         WallSide::Right,
         StaticWall,
     ));
@@ -136,7 +136,7 @@ fn setup_visuals(
             meshes.add(
                 Plane3d::default()
                     .mesh()
-                    .size(26.0, floor_depth + 2.0),
+                    .size(26.0, 30.0),
             ),
         ),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -147,7 +147,7 @@ fn setup_visuals(
         })),
         Transform::from_xyz(12.0, -1.05, 0.0),
         RigidBody::Fixed,
-        Collider::cuboid(13.0, 0.1, (floor_depth + 2.0) / 2.0),
+        Collider::cuboid(13.0, 0.1, 15.0),
     ));
 
     let base_zone_width = 6.0;
@@ -382,18 +382,18 @@ fn sync_walls(
     for (side, mut transform, mut collider) in query.iter_mut() {
         match side {
             WallSide::Left => {
-                transform.translation.x = 0.0;
+                transform.translation.x = -0.5;
             }
             WallSide::Right => {
-                transform.translation.x = map_width;
+                transform.translation.x = map_width + 0.5;
             }
             WallSide::Back => {
                 transform.translation.x = map_width / 2.0;
-                *collider = Collider::cuboid(map_width / 2.0, 5.0, 0.15);
+                *collider = Collider::cuboid(map_width / 2.0, 5.0, 2.0);
             }
             WallSide::Front => {
                 transform.translation.x = map_width / 2.0;
-                *collider = Collider::cuboid(map_width / 2.0, 5.0, 0.15);
+                *collider = Collider::cuboid(map_width / 2.0, 5.0, 2.0);
             }
         }
     }

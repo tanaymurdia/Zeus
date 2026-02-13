@@ -1871,6 +1871,8 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_rapier3d",
+ "bytes",
+ "quinn",
  "rand 0.8.5",
  "tokio",
  "zeus_client",
@@ -6644,6 +6646,7 @@ name = "zeus_node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "ed25519-dalek",
  "quinn",

@@ -13,6 +13,7 @@ struct PlayerShip;
 #[derive(Component)]
 struct ServerBall {
     pub id: u64,
+    pub cached_zone: usize,
 }
 
 fn main() {
@@ -92,7 +93,12 @@ fn update_hud(
                 transform.translation.x, transform.translation.y, transform.translation.z
             );
         }
-        let backend_entities = server_status.get_entity_count();
+        let backend_entities = accumulated_state
+            .positions
+            .lock()
+            .ok()
+            .map(|m| m.len() as u16)
+            .unwrap_or(0);
 
         let player_count = accumulated_state
             .player_entity_ids
@@ -111,7 +117,12 @@ fn update_hud(
         );
     }
 
-    let backend_entities = server_status.get_entity_count();
+    let backend_entities = accumulated_state
+        .positions
+        .lock()
+        .ok()
+        .map(|m| m.len() as u16)
+        .unwrap_or(0);
     for mut color in color_query.iter_mut() {
         if backend_entities > 2000 {
             *color = TextColor(Color::srgb(1.0, 0.2, 0.2));
@@ -125,8 +136,10 @@ fn update_hud(
 
 fn move_player(
     input: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mut query: Query<&mut ExternalImpulse, With<PlayerShip>>,
 ) {
+    let dt = time.delta_secs();
     for mut impulse in query.iter_mut() {
         let thrust = 80.0;
         let mut force = Vec3::ZERO;
@@ -145,7 +158,7 @@ fn move_player(
         }
 
         if force != Vec3::ZERO {
-            impulse.impulse += force.normalize() * thrust * 0.016;
+            impulse.impulse += force.normalize() * thrust * dt;
         }
     }
 }
@@ -153,7 +166,9 @@ fn move_player(
 fn repel_player_from_npcs(
     mut player_query: Query<(&Transform, &mut ExternalImpulse), With<PlayerShip>>,
     npc_query: Query<&Transform, (With<ServerBall>, Without<PlayerShip>)>,
+    time: Res<Time>,
 ) {
+    let dt = time.delta_secs();
     let player_radius = 0.8_f32;
     let npc_radius = 0.8_f32;
     let min_dist = player_radius + npc_radius;
@@ -168,7 +183,7 @@ fn repel_player_from_npcs(
             if dist < min_dist && dist > 0.001 {
                 let overlap = min_dist - dist;
                 let push = diff.normalize() * overlap * repel_strength;
-                impulse.impulse += push * 0.016;
+                impulse.impulse += push * dt;
             }
         }
     }
@@ -226,19 +241,16 @@ fn spawn_entities_on_keypress(
         0
     };
 
-    if spawn_count == 0 || net.client.is_none() {
+    if spawn_count == 0 {
         return;
     }
 
-    let buf = network::encode_0xdd(spawn_count);
-    let client_lock = net.client.as_ref().unwrap().clone();
-    let rt_handle = net.runtime.handle().clone();
-    rt_handle.spawn(async move {
-        let client = client_lock.lock().await;
-        if let Some(conn) = client.connection() {
-            let _ = conn.send_datagram(buf.into());
+    let buf: bytes::Bytes = network::encode_0xdd(spawn_count).into();
+    if let Ok(conns) = net.all_connections.lock() {
+        for conn in conns.iter() {
+            let _ = conn.send_datagram(buf.clone());
         }
-    });
+    }
 }
 
 fn camera_follow(
@@ -265,89 +277,102 @@ fn render_server_balls(
     mut commands: Commands,
     ball_pos: Res<network::BallPositions>,
     accumulated_state: Res<network::AccumulatedState>,
+    net: Res<network::NetworkResource>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut ball_query: Query<(
         Entity,
         &mut Transform,
-        &ServerBall,
+        &mut ServerBall,
         &MeshMaterial3d<StandardMaterial>,
     )>,
 ) {
+    let now_instant = std::time::Instant::now();
+    let acc_map = net
+        .accumulated
+        .as_ref()
+        .and_then(|a| a.lock().ok())
+        .map(|m| {
+            m.iter()
+                .map(|(&id, &(pos, vel, last_seen))| {
+                    let dt = now_instant.duration_since(last_seen).as_secs_f32().min(0.05);
+                    let extrapolated = (
+                        pos.0 + vel.0 * dt,
+                        pos.1 + vel.1 * dt,
+                        pos.2 + vel.2 * dt,
+                    );
+                    (id, extrapolated)
+                })
+                .collect::<std::collections::HashMap<u64, (f32, f32, f32)>>()
+        })
+        .unwrap_or_default();
+
     let snapshots = match ball_pos.snapshots.lock() {
         Ok(s) => s,
         Err(_) => return,
     };
 
-    if snapshots.len() < 2 {
-        return;
-    }
+    let mut target_positions: std::collections::HashMap<u64, Vec3> = std::collections::HashMap::new();
 
-    let delay = std::time::Duration::from_millis(25);
-
-    let now = std::time::Instant::now();
-    let render_time = if now > snapshots[0].timestamp + delay {
-        now - delay
-    } else {
-        snapshots[0].timestamp
-    };
-
-    let mut prev: Option<&network::Snapshot> = None;
-    let mut next: Option<&network::Snapshot> = None;
-
-    for i in 0..snapshots.len() - 1 {
-        let a = &snapshots[i];
-        let b = &snapshots[i + 1];
-
-        if a.timestamp <= render_time && b.timestamp >= render_time {
-            prev = Some(a);
-            next = Some(b);
-            break;
-        }
-    }
-
-    let mut target_positions = std::collections::HashMap::new();
-
-    if let (Some(a), Some(b)) = (prev, next) {
-        let dt = b.timestamp.duration_since(a.timestamp).as_secs_f32();
-        let elapsed = render_time.duration_since(a.timestamp).as_secs_f32();
-        let t = if dt > 0.0001 {
-            (elapsed / dt).clamp(0.0, 1.0)
+    if snapshots.len() >= 2 {
+        let delay = std::time::Duration::from_millis(16);
+        let now = std::time::Instant::now();
+        let render_time = if now > snapshots[0].timestamp + delay {
+            now - delay
         } else {
-            0.0
+            snapshots[0].timestamp
         };
 
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-        let h10 = t3 - 2.0 * t2 + t;
-        let h01 = -2.0 * t3 + 3.0 * t2;
-        let h11 = t3 - t2;
+        let mut prev: Option<&network::Snapshot> = None;
+        let mut next: Option<&network::Snapshot> = None;
 
-        for (&id, &(pos_b_tuple, vel_b_tuple)) in &b.entities {
-            let p1 = Vec3::new(pos_b_tuple.0, pos_b_tuple.1, pos_b_tuple.2);
-            let v1 = Vec3::new(vel_b_tuple.0, vel_b_tuple.1, vel_b_tuple.2);
-
-            let pos = if let Some(&(pos_a_tuple, vel_a_tuple)) = a.entities.get(&id) {
-                let p0 = Vec3::new(pos_a_tuple.0, pos_a_tuple.1, pos_a_tuple.2);
-                let v0 = Vec3::new(vel_a_tuple.0, vel_a_tuple.1, vel_a_tuple.2);
-                p0 * h00 + v0 * (h10 * dt) + p1 * h01 + v1 * (h11 * dt)
-            } else {
-                p1
-            };
-            target_positions.insert(id, pos);
+        for i in 0..snapshots.len() - 1 {
+            let a = &snapshots[i];
+            let b = &snapshots[i + 1];
+            if a.timestamp <= render_time && b.timestamp >= render_time {
+                prev = Some(a);
+                next = Some(b);
+                break;
+            }
         }
-    } else if let Some(last) = snapshots.back() {
-        let elapsed_since_last = render_time
-            .duration_since(last.timestamp)
-            .as_secs_f32()
-            .min(0.05);
-        for (&id, &(pos_tuple, vel_tuple)) in &last.entities {
-            let pos = Vec3::new(pos_tuple.0, pos_tuple.1, pos_tuple.2);
-            let vel = Vec3::new(vel_tuple.0, vel_tuple.1, vel_tuple.2);
-            target_positions.insert(id, pos + vel * elapsed_since_last);
+
+        if let (Some(a), Some(b)) = (prev, next) {
+            let dt = b.timestamp.duration_since(a.timestamp).as_secs_f32();
+            let elapsed = render_time.duration_since(a.timestamp).as_secs_f32();
+            let alpha = if dt > 0.0001 {
+                (elapsed / dt).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            for (&id, &(pos_b_tuple, _)) in &b.entities {
+                let p1 = Vec3::new(pos_b_tuple.0, pos_b_tuple.1, pos_b_tuple.2);
+                let pos = if let Some(&(pos_a_tuple, _)) = a.entities.get(&id) {
+                    let p0 = Vec3::new(pos_a_tuple.0, pos_a_tuple.1, pos_a_tuple.2);
+                    p0.lerp(p1, alpha)
+                } else {
+                    p1
+                };
+                target_positions.insert(id, pos);
+            }
+        } else if let Some(last) = snapshots.back() {
+            let elapsed_since_last = render_time
+                .duration_since(last.timestamp)
+                .as_secs_f32()
+                .min(0.1);
+            for (&id, &(pos_tuple, vel_tuple)) in &last.entities {
+                let pos = Vec3::new(pos_tuple.0, pos_tuple.1, pos_tuple.2);
+                let vel = Vec3::new(vel_tuple.0, vel_tuple.1, vel_tuple.2);
+                target_positions.insert(id, pos + vel * elapsed_since_last);
+            }
         }
     }
+
+    for (&id, &pos) in &acc_map {
+        target_positions.entry(id).or_insert(Vec3::new(pos.0, pos.1, pos.2));
+    }
+
+    drop(snapshots);
 
     let player_id = accumulated_state.player_id.lock().ok().and_then(|pid| *pid);
     if let Some(pid) = player_id {
@@ -366,28 +391,56 @@ fn render_server_balls(
         .map(|s| s.clone())
         .unwrap_or_default();
 
-    let nc = server_status.get_node_count().max(1) as f32;
-    let zw = 24.0 / nc;
+    let nc = server_status.get_node_count().max(1) as usize;
+    let zw = 24.0 / nc as f32;
+    let hysteresis = 0.5_f32;
 
     for (&id, &pos) in &target_positions {
         let is_player = remote_player_ids.contains(&id);
-        let (r, g, b) = if is_player {
-            (1.0, 0.0, 1.0)
-        } else {
-            let owner = (pos.x / zw).floor() as usize;
-            let owner = owner.clamp(0, (nc as usize).saturating_sub(1));
-            ZONE_COLORS[owner]
-        };
 
         if let Some(&entity) = existing_balls.get(&id) {
-            if let Ok((_, mut transform, _, material_handle)) = ball_query.get_mut(entity) {
-                transform.translation = pos;
+            if let Ok((_, mut transform, mut server_ball, material_handle)) = ball_query.get_mut(entity) {
+                transform.translation = transform.translation.lerp(pos, 0.7);
+
+                if !is_player {
+                    let raw_zone = (pos.x / zw).floor() as usize;
+                    let raw_zone = raw_zone.clamp(0, nc.saturating_sub(1));
+                    let cur = server_ball.cached_zone;
+                    if raw_zone != cur {
+                        let boundary = if raw_zone > cur {
+                            cur as f32 * zw + zw
+                        } else {
+                            cur as f32 * zw
+                        };
+                        if (pos.x - boundary).abs() > hysteresis {
+                            server_ball.cached_zone = raw_zone;
+                        }
+                    }
+                }
+
+                let (r, g, b) = if is_player {
+                    (1.0, 0.0, 1.0)
+                } else {
+                    ZONE_COLORS[server_ball.cached_zone.min(3)]
+                };
                 if let Some(material) = materials.get_mut(material_handle) {
                     material.base_color = Color::srgb(r, g, b);
                     material.emissive = LinearRgba::rgb(r * 1.5, g * 1.5, b * 1.5);
                 }
             }
         } else {
+            let initial_zone = if is_player {
+                0
+            } else {
+                let z = (pos.x / zw).floor() as usize;
+                z.clamp(0, nc.saturating_sub(1))
+            };
+            let (r, g, b) = if is_player {
+                (1.0, 0.0, 1.0)
+            } else {
+                ZONE_COLORS[initial_zone.min(3)]
+            };
+
             let radius = if is_player {
                 1.0
             } else {
@@ -403,13 +456,13 @@ fn render_server_balls(
                     ..default()
                 })),
                 Transform::from_translation(pos),
-                ServerBall { id },
+                ServerBall { id, cached_zone: initial_zone },
             ));
         }
     }
 
     for (id, entity) in existing_balls {
-        if !target_positions.contains_key(&id) {
+        if !target_positions.contains_key(&id) && !acc_map.contains_key(&id) {
             commands.entity(entity).despawn();
         }
     }

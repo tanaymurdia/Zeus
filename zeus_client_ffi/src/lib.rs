@@ -201,43 +201,63 @@ pub unsafe extern "C" fn zeus_parse_state_update(
         return -1;
     }
     let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
-    if slice[0] != 0xCC {
+    if slice.is_empty() || slice[0] != 0xCC {
         return -2;
     }
-    let fb_bytes = &slice[1..];
-    let update = match zeus_common::flatbuffers::root::<zeus_common::StateUpdate>(fb_bytes) {
-        Ok(u) => u,
-        Err(_) => return -3,
-    };
-    let ghosts = match update.ghosts() {
-        Some(g) => g,
-        None => return 0,
-    };
+    if slice.len() < 3 {
+        return -3;
+    }
+    let count = u16::from_le_bytes([slice[1], slice[2]]) as usize;
+    let mut offset = 3usize;
     let mut written = 0i32;
-    for ghost in ghosts {
+    for _ in 0..count {
         if written >= max_entities {
             break;
         }
+        if offset + 15 > slice.len() {
+            break;
+        }
+        let id = u64::from_le_bytes([
+            slice[offset], slice[offset+1], slice[offset+2], slice[offset+3],
+            slice[offset+4], slice[offset+5], slice[offset+6], slice[offset+7],
+        ]);
+        offset += 8;
+        let flags = slice[offset];
+        offset += 1;
+        let px = i16::from_le_bytes([slice[offset], slice[offset+1]]) as f32 / 500.0;
+        offset += 2;
+        let py = i16::from_le_bytes([slice[offset], slice[offset+1]]) as f32 / 500.0;
+        offset += 2;
+        let pz = i16::from_le_bytes([slice[offset], slice[offset+1]]) as f32 / 500.0;
+        offset += 2;
+        let (vx, vy, vz) = if flags & 1 == 0 {
+            if offset + 6 > slice.len() { break; }
+            let vx = i16::from_le_bytes([slice[offset], slice[offset+1]]) as f32 / 100.0;
+            offset += 2;
+            let vy = i16::from_le_bytes([slice[offset], slice[offset+1]]) as f32 / 100.0;
+            offset += 2;
+            let vz = i16::from_le_bytes([slice[offset], slice[offset+1]]) as f32 / 100.0;
+            offset += 2;
+            (vx, vy, vz)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
         let i = written as usize;
         if !entity_ids.is_null() {
-            unsafe { *entity_ids.add(i) = ghost.entity_id() };
+            unsafe { *entity_ids.add(i) = id };
         }
         if !positions_xyz.is_null() {
-            if let Some(pos) = ghost.position() {
-                unsafe {
-                    *positions_xyz.add(i * 3) = pos.x();
-                    *positions_xyz.add(i * 3 + 1) = pos.y();
-                    *positions_xyz.add(i * 3 + 2) = pos.z();
-                }
+            unsafe {
+                *positions_xyz.add(i * 3) = px;
+                *positions_xyz.add(i * 3 + 1) = py;
+                *positions_xyz.add(i * 3 + 2) = pz;
             }
         }
         if !velocities_xyz.is_null() {
-            if let Some(vel) = ghost.velocity() {
-                unsafe {
-                    *velocities_xyz.add(i * 3) = vel.x();
-                    *velocities_xyz.add(i * 3 + 1) = vel.y();
-                    *velocities_xyz.add(i * 3 + 2) = vel.z();
-                }
+            unsafe {
+                *velocities_xyz.add(i * 3) = vx;
+                *velocities_xyz.add(i * 3 + 1) = vy;
+                *velocities_xyz.add(i * 3 + 2) = vz;
             }
         }
         written += 1;
@@ -319,49 +339,44 @@ mod tests {
 
     #[test]
     fn test_parse_state_update() {
-        use zeus_common::flatbuffers::FlatBufferBuilder;
-        use zeus_common::{Ghost, GhostArgs, StateUpdate, StateUpdateArgs, Vec3};
-
-        let mut builder = FlatBufferBuilder::new();
-        let pos1 = Vec3::new(1.0, 2.0, 3.0);
-        let vel1 = Vec3::new(0.1, 0.2, 0.3);
-        let sig1 = builder.create_vector(&[0u8; 64]);
-        let g1 = Ghost::create(
-            &mut builder,
-            &GhostArgs {
-                entity_id: 10,
-                position: Some(&pos1),
-                velocity: Some(&vel1),
-                signature: Some(sig1),
-            },
-        );
-
-        let pos2 = Vec3::new(4.0, 5.0, 6.0);
-        let vel2 = Vec3::new(0.4, 0.5, 0.6);
-        let sig2 = builder.create_vector(&[0u8; 64]);
-        let g2 = Ghost::create(
-            &mut builder,
-            &GhostArgs {
-                entity_id: 20,
-                position: Some(&pos2),
-                velocity: Some(&vel2),
-                signature: Some(sig2),
-            },
-        );
-
-        let ghosts_vec = builder.create_vector(&[g1, g2]);
-        let update = StateUpdate::create(
-            &mut builder,
-            &StateUpdateArgs {
-                ghosts: Some(ghosts_vec),
-            },
-        );
-        builder.finish(update, None);
-        let fb_bytes = builder.finished_data();
-
-        let mut payload = Vec::with_capacity(1 + fb_bytes.len());
+        let mut payload = Vec::new();
         payload.push(0xCC);
-        payload.extend_from_slice(fb_bytes);
+        let count: u16 = 2;
+        payload.extend_from_slice(&count.to_le_bytes());
+
+        let id1: u64 = 10;
+        let px1 = ((1.0f32 * 500.0).round() as i16).to_le_bytes();
+        let py1 = ((2.0f32 * 500.0).round() as i16).to_le_bytes();
+        let pz1 = ((3.0f32 * 500.0).round() as i16).to_le_bytes();
+        let vx1 = ((0.1f32 * 100.0).round() as i16).to_le_bytes();
+        let vy1 = ((0.2f32 * 100.0).round() as i16).to_le_bytes();
+        let vz1 = ((0.3f32 * 100.0).round() as i16).to_le_bytes();
+
+        payload.extend_from_slice(&id1.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&px1);
+        payload.extend_from_slice(&py1);
+        payload.extend_from_slice(&pz1);
+        payload.extend_from_slice(&vx1);
+        payload.extend_from_slice(&vy1);
+        payload.extend_from_slice(&vz1);
+
+        let id2: u64 = 20;
+        let px2 = ((4.0f32 * 500.0).round() as i16).to_le_bytes();
+        let py2 = ((5.0f32 * 500.0).round() as i16).to_le_bytes();
+        let pz2 = ((6.0f32 * 500.0).round() as i16).to_le_bytes();
+        let vx2 = ((0.4f32 * 100.0).round() as i16).to_le_bytes();
+        let vy2 = ((0.5f32 * 100.0).round() as i16).to_le_bytes();
+        let vz2 = ((0.6f32 * 100.0).round() as i16).to_le_bytes();
+
+        payload.extend_from_slice(&id2.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&px2);
+        payload.extend_from_slice(&py2);
+        payload.extend_from_slice(&pz2);
+        payload.extend_from_slice(&vx2);
+        payload.extend_from_slice(&vy2);
+        payload.extend_from_slice(&vz2);
 
         let mut ids = [0u64; 10];
         let mut positions = [0.0f32; 30];

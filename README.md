@@ -1,139 +1,144 @@
 # Zeus
 
 > **Zero-Trust Physics for the Spatial Web.**
-> Zeus is a proof-of-concept for a serverless, spatially-partitioned game world where entities migrate seamlessly between nodes using a specialized handoff protocol.
+> Zeus is a serverless, spatially-partitioned game engine where entities migrate seamlessly between nodes using a cryptographically verified handoff protocol over a full-mesh QUIC network.
 
 ---
 
-## 🚀 Quick Start: Cosmic Drift Demo
+## Quick Start: Cosmic Drift Demo
 
-Experience the seamless handoff protocol in action with the "Cosmic Drift" visualization. In this demo, you pilot a ship across a server boundary (`x=0`), triggering a real-time cryptographic authority swap between two distinct server nodes.
+Cosmic Drift is a real-time physics demo showcasing Zeus's full-mesh autoscaling. NPC balls spawn on Node 0, and as count thresholds are crossed (5, 10, 15), the orchestrator automatically spawns new nodes. All nodes form a full mesh — every node connects to every other node directly. The client connects to all nodes simultaneously, receiving entity state with exactly 1-hop latency from any source.
 
 ### 1. Launch the Server Orchestrator
-The orchestrator automatically spawns and manages the physics nodes (Server A & Server B).
 
 ```bash
-# Terminal 1
-cargo run -p cosmic_drift_server -- orchestrator
+cargo run -p cosmic_drift_server -- orchestrator --start-port 5000
 ```
-*You will see logs indicating that Node 0 and Node 1 have launched and are simulating physics.*
+
+The orchestrator spawns Node 0 on port 5000. As balls accumulate, it spawns Node 1 (5001), Node 2 (5002), Node 3 (5003) — each connecting to all existing nodes via `--peers`.
 
 ### 2. Launch the Client
-Visualizes the world and controls the ship.
 
 ```bash
-# Terminal 2
 cargo run -p cosmic_drift
 ```
 
+The client connects to port 5000 initially. When it detects new nodes via 0xAA status broadcasts, it spawns additional reader tasks for ports 5001-5003, merging all entity state into a single view.
+
 ### 3. Controls
--   **W/A/S/D**: Move Ship
--   **Arrow Keys**: Move Camera
--   **Space**: Boost
-
-### 4. The Protocol in Action
-
-When you cross the **Red Wall** (at `x=0`), the Zeus Handoff Protocol triggers automatically.
-
-**Log Flows to Watch (Terminal 1):**
-
-| Event | Log Message | Meaning |
-|-------|-------------|---------|
-| **Handoff** | `[+] Player <ID> ARRIVED` | Entity ownership successfully transferred to this node. |
-| **Departure** | `[-] Player <ID> DEPARTED` | Entity successfully handed off to neighbor. |
+- **W/A/S/D**: Move player ball
+- **M**: Spawn 500 NPC balls
+- **N**: Spawn 100 NPC balls
+- **Arrow Keys**: Move camera
 
 ---
 
-## 🏗 Architecture
+## Architecture
 
-The Spatial Hypervisor consists of three core phases, built to minimize latency and maximize security.
+### Full Mesh Topology
 
-### Phase 1: The Wire (Data Plane)
-The foundation of the hypervisor. Focuses on raw performance and efficient state compression.
--   **Protocol**: QUIC Datagrams for high-frequency physics updates (unreliable, unordered, fast).
--   **Schema**: Optimized Flatbuffer schema (`Ghost.fbs`) with minimal footprint.
--   **Performance**: **~0.77ms** serialization time for 5k entities (M1 Mac Benchmark).
+```
+    Node 0 <----> Node 1
+      ^  \       /  ^
+      |   \     /   |
+      |    \   /    |
+      v     v v     v
+    Node 3 <----> Node 2
 
-### Phase 2: The Handoff (Control Plane)
-The logic layer managing authority transitions.
--   **Problem**: Preventing "teleportation" or jitter when an entity crosses from Server A to Server B.
--   **Solution**:
-    1.  **Hysteresis**: Entities must cross `boundary + margin` to trigger a handoff, preventing oscillation.
-    2.  **3-Way Handshake**: 
-        -   `OFFER`: "I am sending you Entity X."
-        -   `ACK`: "I am ready to receive Entity X."
-        -   `COMMIT`: "I relinquish control. Entity X is yours."
+    Client connects to ALL nodes
+```
 
-### Phase 3: The Witness (Security)
-Cryptographic verification of state provenance.
--   **Zero-Trust**: Every state update is signed by the authoritative node (or client).
--   **Ed25519 Signatures**: Fast signing (~13µs) and verification (~32µs) ensures tamper-proof entity state. **Active in Release v0.1**.
+Every node connects to every other node directly. No daisy chain, no relay, no multi-hop latency. Entity data is always exactly 1 hop from source to any destination.
 
-### Phase 4: The Mesh (Discovery)
-Decentralized neighbor discovery.
--   **Discovery Protocol**: Nodes gossip their existence via lightweight UDP announcments (~0.3µs serialize).
--   **Spatial Mapping**: Nodes dynamically find peers responsible for adjacent spatial regions.
+### The Wire (Data Plane)
+- **Protocol**: QUIC datagrams for high-frequency physics state (unreliable, unordered, fast)
+- **Format**: Custom compact binary — not FlatBuffers
+  - **0xCC** (Node -> Client): `u64 id + u8 flags + i16 quantized pos [+ i16 vel]` = 15-21 bytes/entity
+  - **0xCE** (Node -> Peer): `u64 id + 3×i16 pos + 3×i16 vel` = 20 bytes/entity + 64B Ed25519 batch signature
+  - **0xAA** (Node -> Client): 6-byte status: entity count, node count, map width, ball radius
+  - **0xBB** (Node -> Client): player entity ID list
+- **Quantization**: Positions at 2mm precision (×500), velocities at 0.01 m/s (×100)
+- **Delta encoding**: Only entities whose quantized position changed are broadcast to clients
+- **128Hz physics / 32Hz broadcast**: 4:1 throttle ratio
+
+### The Handoff (Control Plane)
+Seamless entity migration between nodes via 3-way handshake over reliable QUIC streams (FlatBuffers):
+1. **OFFER**: "I am sending you Entity X."
+2. **ACK**: "I am ready to receive Entity X."
+3. **COMMIT**: "I relinquish control. Entity X is yours."
+
+Hysteresis prevents oscillation at boundaries.
+
+### Zero-Trust Physics (Security)
+- Every 0xCE peer gossip datagram includes a batch Ed25519 signature
+- Receiving nodes verify the signature against the sender's `VerifyingKey` (exchanged via 0xCF datagrams alongside discovery announces)
+- Unverified gossip is rejected
+- Signing: ~13us per batch. Verification: ~32us per batch. At 32Hz × 4 nodes = ~4ms/sec total overhead.
+
+### Dynamic Auto-Scaling
+Auto-scaling is live, not a future feature:
+- **Threshold-based**: 5 balls -> 2 nodes, 10 -> 3, 15 -> 4
+- **Orchestrator-driven**: Monitors `REQUEST_SPLIT` from Node 0, spawns new nodes with `--peers` pointing to all existing nodes
+- **Zone recomputation**: Each node dynamically recalculates its spatial zone based on total node count
+
+### SDK Separation
+The game server (`cosmic_drift_server`) is a pure physics source. It implements `GameWorld` (step, arrive, depart, update) and nothing else. All networking concerns live in `ZeusEngine`/`GameLoop`:
+- `broadcast_status()` sends 0xAA + 0xBB to clients
+- `should_split()` encapsulates autoscaling thresholds
+- `broadcast_state_to_clients()` / `broadcast_state_to_peers()` handle all wire encoding
+
+Any game using Zeus gets autoscaling, status broadcasts, handoff, and zero-trust for free.
 
 ---
 
-## 📊 Benchmarks
+## Benchmarks
 
-Run locally (Active Release Build):
+Run with `cargo run -p zeus_common --bin benchmark --release`:
 
-| Metric | Target | Result | Status |
-| :--- | :--- | :--- | :--- |
-| **Serialization (5k entities)** | < 2.00ms | **~0.77ms** | ✅ Passed |
-| **Transport Overhead** | < 1.00ms | **~0.90ms** | ✅ Passed |
-| **Signature Verify** | < 50µs | **~32.3µs** | ✅ Passed |
-| **Discovery Throughput** | > 1M ops/sec | **~3.3M ops/sec** | ✅ Passed |
+| Metric | Result | Notes |
+| :--- | :--- | :--- |
+| **Compact encode (5k entities)** | ~0.17ms | 4.5x faster than FlatBuffers |
+| **Bytes/entity (moving)** | 21 bytes | vs ~60B FlatBuffers |
+| **Bytes/entity (at rest)** | 15 bytes | At-rest flag omits velocity |
+| **Delta encoding savings** | ~53% | Only changed entities broadcast |
+| **Batch signing (5k entities)** | ~0.8ms | 16.8x faster than per-entity |
+| **Ed25519 verify** | ~32us | Per batch, not per entity |
+| **Discovery throughput** | ~3.3M ops/sec | Lightweight FlatBuffer announce |
 
-*Benchmarks run on Apple Silicon (M1 Pro).*
+*Benchmarks on Apple Silicon (M1 Pro).*
 
 ---
 
-## 🛠 Usage (Development)
+## Development
 
 ### Prerequisites
--   Rust (stable)
--   `flatc` (Flatbuffers compiler)
+- Rust (stable)
+- `flatc` (FlatBuffers compiler, only if modifying `ghost.fbs`)
 
 ### Building
 ```bash
 cargo build --release
 ```
 
-### Running Test Suite
+### Running Tests
 ```bash
 cargo test --workspace
 ```
-Includes serialization stress tests, hysteresis logic verification, and cryptographic integrity checks.
+
+Includes: compact binary encode/decode, delta encoding, Ed25519 signing/verification, handoff protocol, multi-node e2e integration, SDK separation.
 
 ---
 
-## 💡 Why This Is Novel (The Spatial Hypervisor)
+## Why This Is Novel
 
-Zeus is not just a game server; it is a **Middleware** that turns any simulation into a distributed system.
-
-1.  **Protocol-First Architecture**: The "Game Server" (`cosmic_drift_server`) is just a *physics source*. It doesn't know about clients or networking protocols. It just feeds `ZeusEngine`.
-2.  **Scaffolding**: `ZeusEngine` handles the *entire* distributed system logic (Handoffs, Discovery, Replication, Client Interest Management) invisibly.
-3.  **Client-Agnostic**: The Client connects to the *Mesh*, not a specific server. The Mesh routes data dynamically.
-4.  **Zero-Trust Physics**: Unlike traditional MMOs where servers are trusted authorities, Zeus assumes **Byzantine Fault Tolerance**. Every physics update verified with `Ed25519` signatures in <35µs, enabling a **Permissionless Metaverse**.
-5.  **The "Atomic Handoff"**: Seamlessly transferring a moving entity between servers without dropping a single frame is a complex problem usually reserved for proprietary engines (e.g., Star Citizen). Zeus makes this democratized and open-source.
+1. **Protocol-First**: The game server is just a physics source. It doesn't know about clients, networking, or protocols. It feeds `ZeusEngine`.
+2. **Full Mesh**: Every node connects to every other node. Client connects to all nodes. No single point of failure. 1-hop latency everywhere.
+3. **Zero-Trust Physics**: Unlike traditional MMOs with trusted authorities, Zeus verifies every state update with Ed25519 signatures. Byzantine Fault Tolerant by design.
+4. **Atomic Handoff**: Seamless entity migration between servers without dropping a frame — usually reserved for proprietary engines (Star Citizen, SpatialOS). Zeus makes this open-source.
+5. **SDK-Ready**: Any game engine (Bevy, Unity, Unreal) can implement the `GameWorld` trait and get distributed physics for free.
 
 ---
 
-## 🔮 Future: Dynamic Auto-Scaling
-
-The next frontier for Zeus is **Elastic Partitioning**:
-
--   **Fluid Boundaries**: Instead of fixed lines, server boundaries will "float" based on load.
--   **Flash Crowd Handling**: If 10,000 players gather in one spot, the Mesh will recursively split that region into a dense **Quadtree** of nodes.
--   **Cost Efficiency**: Empty regions effectively "turn off" (merge into larger idle nodes), minimizing infrastructure costs.
-
-See the [Scaling Strategy](https://github.com/tanaymurdia/Zeus/blob/main/docs/scaling_strategy.md) (Work in Progress) for the detailed design.
-
----
-
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
