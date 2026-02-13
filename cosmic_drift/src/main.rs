@@ -35,6 +35,7 @@ fn main() {
             Update,
             (
                 move_player,
+                repel_player_from_npcs,
                 update_hud,
                 spawn_entities_on_keypress,
                 camera_follow,
@@ -127,7 +128,7 @@ fn move_player(
     mut query: Query<&mut ExternalImpulse, With<PlayerShip>>,
 ) {
     for mut impulse in query.iter_mut() {
-        let thrust = 50.0;
+        let thrust = 80.0;
         let mut force = Vec3::ZERO;
 
         if input.pressed(KeyCode::KeyW) {
@@ -145,6 +146,30 @@ fn move_player(
 
         if force != Vec3::ZERO {
             impulse.impulse += force.normalize() * thrust * 0.016;
+        }
+    }
+}
+
+fn repel_player_from_npcs(
+    mut player_query: Query<(&Transform, &mut ExternalImpulse), With<PlayerShip>>,
+    npc_query: Query<&Transform, (With<ServerBall>, Without<PlayerShip>)>,
+) {
+    let player_radius = 0.8_f32;
+    let npc_radius = 0.8_f32;
+    let min_dist = player_radius + npc_radius;
+    let repel_strength = 15.0;
+
+    for (player_tf, mut impulse) in player_query.iter_mut() {
+        let pp = player_tf.translation;
+        for npc_tf in npc_query.iter() {
+            let np = npc_tf.translation;
+            let diff = Vec3::new(pp.x - np.x, 0.0, pp.z - np.z);
+            let dist = diff.length();
+            if dist < min_dist && dist > 0.001 {
+                let overlap = min_dist - dist;
+                let push = diff.normalize() * overlap * repel_strength;
+                impulse.impulse += push * 0.016;
+            }
         }
     }
 }
@@ -172,8 +197,8 @@ fn setup_scene(
         Collider::ball(0.8),
         Velocity::default(),
         Damping {
-            linear_damping: 0.0,
-            angular_damping: 0.0,
+            linear_damping: 0.5,
+            angular_damping: 0.5,
         },
         ExternalImpulse::default(),
         PlayerShip,
@@ -258,7 +283,7 @@ fn render_server_balls(
         return;
     }
 
-    let delay = std::time::Duration::from_millis(15);
+    let delay = std::time::Duration::from_millis(25);
 
     let now = std::time::Instant::now();
     let render_time = if now > snapshots[0].timestamp + delay {
@@ -284,22 +309,31 @@ fn render_server_balls(
     let mut target_positions = std::collections::HashMap::new();
 
     if let (Some(a), Some(b)) = (prev, next) {
-        let duration = b.timestamp.duration_since(a.timestamp).as_secs_f32();
+        let dt = b.timestamp.duration_since(a.timestamp).as_secs_f32();
         let elapsed = render_time.duration_since(a.timestamp).as_secs_f32();
-        let alpha = if duration > 0.0001 {
-            (elapsed / duration).clamp(0.0, 1.0)
+        let t = if dt > 0.0001 {
+            (elapsed / dt).clamp(0.0, 1.0)
         } else {
             0.0
         };
 
-        for (&id, &(pos_b_tuple, _vel_b)) in &b.entities {
-            let pos_b = Vec3::new(pos_b_tuple.0, pos_b_tuple.1, pos_b_tuple.2);
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
 
-            let pos = if let Some(&(pos_a_tuple, _)) = a.entities.get(&id) {
-                let pos_a = Vec3::new(pos_a_tuple.0, pos_a_tuple.1, pos_a_tuple.2);
-                pos_a.lerp(pos_b, alpha)
+        for (&id, &(pos_b_tuple, vel_b_tuple)) in &b.entities {
+            let p1 = Vec3::new(pos_b_tuple.0, pos_b_tuple.1, pos_b_tuple.2);
+            let v1 = Vec3::new(vel_b_tuple.0, vel_b_tuple.1, vel_b_tuple.2);
+
+            let pos = if let Some(&(pos_a_tuple, vel_a_tuple)) = a.entities.get(&id) {
+                let p0 = Vec3::new(pos_a_tuple.0, pos_a_tuple.1, pos_a_tuple.2);
+                let v0 = Vec3::new(vel_a_tuple.0, vel_a_tuple.1, vel_a_tuple.2);
+                p0 * h00 + v0 * (h10 * dt) + p1 * h01 + v1 * (h11 * dt)
             } else {
-                pos_b
+                p1
             };
             target_positions.insert(id, pos);
         }
@@ -347,7 +381,7 @@ fn render_server_balls(
 
         if let Some(&entity) = existing_balls.get(&id) {
             if let Ok((_, mut transform, _, material_handle)) = ball_query.get_mut(entity) {
-                transform.translation = transform.translation.lerp(pos, 0.15);
+                transform.translation = pos;
                 if let Some(material) = materials.get_mut(material_handle) {
                     material.base_color = Color::srgb(r, g, b);
                     material.emissive = LinearRgba::rgb(r * 1.5, g * 1.5, b * 1.5);

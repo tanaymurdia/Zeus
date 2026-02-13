@@ -1,4 +1,5 @@
 use clap::Parser;
+use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -61,6 +62,9 @@ struct PhysicsWorld {
     balls: HashMap<u64, Ball>,
     server_ball_ids: HashSet<u64>,
     next_ball_id: u64,
+
+    character_controller: KinematicCharacterController,
+    player_targets: HashMap<u64, (f32, f32, f32)>,
 }
 
 impl PhysicsWorld {
@@ -108,12 +112,21 @@ impl PhysicsWorld {
         collider_set.insert_with_parent(wall_side_col.clone(), h_left, &mut rigid_body_set);
         collider_set.insert_with_parent(wall_side_col, h_right, &mut rigid_body_set);
 
+        let mut character_controller = KinematicCharacterController::default();
+        character_controller.offset = CharacterLength::Absolute(0.02);
+        character_controller.autostep = None;
+        character_controller.snap_to_ground = Some(CharacterLength::Absolute(0.5));
+
         Self {
             rigid_body_set,
             collider_set,
             integration_parameters: {
                 let mut p = IntegrationParameters::default();
                 p.dt = 1.0 / 128.0;
+                p.num_solver_iterations = std::num::NonZeroUsize::new(8).unwrap();
+                p.contact_natural_frequency = 60.0;
+                p.contact_damping_ratio = 2.0;
+                p.normalized_max_corrective_velocity = 20.0;
                 p
             },
             physics_pipeline: PhysicsPipeline::new(),
@@ -127,6 +140,8 @@ impl PhysicsWorld {
             balls: HashMap::new(),
             server_ball_ids: HashSet::new(),
             next_ball_id: 1,
+            character_controller,
+            player_targets: HashMap::new(),
         }
     }
 
@@ -134,23 +149,24 @@ impl PhysicsWorld {
         let id = self.next_ball_id;
         self.next_ball_id += 1;
 
-        let x = (id % 6 + 1) as f32; // X in [1..7] (tight pack)
+        let hash = id.wrapping_mul(2654435761);
+        let x = 1.0 + (hash % 100) as f32 * 0.2;
         let y = 3.0;
-        let z = ((id * 17) % 20) as f32 - 10.0; // Z in [-10..10]
+        let z = ((hash / 100) % 100) as f32 * 0.2 - 10.0;
 
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(vector![x, y, z])
             .linvel(vector![5.0, 0.0, 0.0])
-            .linear_damping(1.5)
-            .angular_damping(1.0)
+            .linear_damping(0.5)
+            .angular_damping(0.5)
             .ccd_enabled(true)
             .build();
         let handle = self.rigid_body_set.insert(rigid_body);
 
         let collider = ColliderBuilder::ball(0.8)
-            .restitution(0.6)
-            .friction(0.3)
-            .density(8.0)
+            .restitution(0.7)
+            .friction(0.2)
+            .density(5.0)
             .build();
         self.collider_set
             .insert_with_parent(collider, handle, &mut self.rigid_body_set);
@@ -180,15 +196,15 @@ impl PhysicsWorld {
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(vector![pos.0, pos.1, pos.2])
             .linvel(vector![vel.0, vel.1, vel.2])
-            .linear_damping(1.5)
-            .angular_damping(1.0)
+            .linear_damping(0.5)
+            .angular_damping(0.5)
             .ccd_enabled(true)
             .build();
         let handle = self.rigid_body_set.insert(rigid_body);
         let collider = ColliderBuilder::ball(0.8)
-            .restitution(0.6)
-            .friction(0.3)
-            .density(8.0)
+            .restitution(0.7)
+            .friction(0.2)
+            .density(5.0)
             .build();
         self.collider_set
             .insert_with_parent(collider, handle, &mut self.rigid_body_set);
@@ -209,9 +225,9 @@ impl PhysicsWorld {
         let handle = self.rigid_body_set.insert(rigid_body);
 
         let collider = ColliderBuilder::ball(0.8)
-            .restitution(0.6)
-            .friction(0.3)
-            .density(8.0)
+            .restitution(0.7)
+            .friction(0.2)
+            .density(5.0)
             .build();
         self.collider_set
             .insert_with_parent(collider, handle, &mut self.rigid_body_set);
@@ -224,14 +240,11 @@ impl PhysicsWorld {
         );
     }
 
-    fn update_ball(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
+    fn update_ball(&mut self, id: u64, pos: (f32, f32, f32), _vel: (f32, f32, f32)) {
         if let Some(ball) = self.balls.get(&id) {
-            if let Some(rb) = self.rigid_body_set.get_mut(ball.rigid_body_handle) {
+            if let Some(rb) = self.rigid_body_set.get(ball.rigid_body_handle) {
                 if rb.is_kinematic() {
-                    rb.set_next_kinematic_position(rapier3d::prelude::Isometry::translation(
-                        pos.0, pos.1, pos.2,
-                    ));
-                    rb.set_linvel(rapier3d::na::vector![vel.0, vel.1, vel.2], true);
+                    self.player_targets.insert(id, pos);
                 }
             }
         }
@@ -252,6 +265,75 @@ impl PhysicsWorld {
 
     fn step(&mut self) {
         let gravity = vector![0.0, -9.81, 0.0];
+        let dt = self.integration_parameters.dt;
+        let character_shape = rapier3d::geometry::Ball::new(0.8);
+        let character_mass = 20.0;
+
+        self.query_pipeline.update(&self.collider_set);
+
+        let targets: Vec<(u64, (f32, f32, f32))> = self.player_targets.drain().collect();
+
+        struct PlayerMove {
+            handle: RigidBodyHandle,
+            current_pos: Isometry<f32>,
+            desired: rapier3d::na::Vector3<f32>,
+        }
+
+        let moves: Vec<PlayerMove> = targets
+            .iter()
+            .filter_map(|(id, target)| {
+                let ball = self.balls.get(id)?;
+                let rb = self.rigid_body_set.get(ball.rigid_body_handle)?;
+                let current_pos = *rb.position();
+                let desired = vector![
+                    target.0 - current_pos.translation.x,
+                    target.1 - current_pos.translation.y,
+                    target.2 - current_pos.translation.z
+                ];
+                Some(PlayerMove {
+                    handle: ball.rigid_body_handle,
+                    current_pos,
+                    desired,
+                })
+            })
+            .collect();
+
+        for m in moves {
+            let filter = QueryFilter::default().exclude_rigid_body(m.handle);
+            let mut collisions = vec![];
+            let corrected = self.character_controller.move_shape(
+                dt,
+                &self.rigid_body_set,
+                &self.collider_set,
+                &self.query_pipeline,
+                &character_shape,
+                &m.current_pos,
+                m.desired,
+                filter,
+                |c| collisions.push(c),
+            );
+
+            let new_pos = Isometry::translation(
+                m.current_pos.translation.x + corrected.translation.x,
+                m.current_pos.translation.y + corrected.translation.y,
+                m.current_pos.translation.z + corrected.translation.z,
+            );
+            if let Some(rb) = self.rigid_body_set.get_mut(m.handle) {
+                rb.set_next_kinematic_position(new_pos);
+            }
+
+            let filter2 = QueryFilter::default().exclude_rigid_body(m.handle);
+            self.character_controller.solve_character_collision_impulses(
+                dt,
+                &mut self.rigid_body_set,
+                &self.collider_set,
+                &self.query_pipeline,
+                &character_shape,
+                character_mass,
+                &collisions,
+                filter2,
+            );
+        }
 
         for ball in self.balls.values() {
             if let Some(rb) = self.rigid_body_set.get_mut(ball.rigid_body_handle) {
@@ -697,7 +779,7 @@ mod tests {
                 .ccd_enabled(true)
                 .build();
             let h = world.rigid_body_set.insert(rb);
-            let col = ColliderBuilder::ball(0.8).restitution(0.6).friction(0.3).density(8.0).build();
+            let col = ColliderBuilder::ball(0.8).restitution(0.7).friction(0.2).density(5.0).build();
             world.collider_set.insert_with_parent(col, h, &mut world.rigid_body_set);
             world.balls.insert(id, Ball { rigid_body_handle: h });
             world.server_ball_ids.insert(id);
