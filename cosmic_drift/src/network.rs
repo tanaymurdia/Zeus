@@ -16,14 +16,18 @@ impl Plugin for NetworkPlugin {
             .insert_resource(BallPositions::default())
             .insert_resource(AccumulatedState::default())
             .add_systems(Startup, setup_network)
-            .add_systems(Update, (send_player_state, generate_snapshots));
+            .add_systems(
+                Update,
+                (send_player_state, generate_snapshots, check_roaming),
+            );
     }
 }
 
 #[derive(Resource, Default)]
 pub struct AccumulatedState {
-    pub positions: Arc<std::sync::Mutex<std::collections::HashMap<u64, (f32, f32, f32)>>>,
+    pub positions: Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))>>>,
     pub player_id: Arc<std::sync::Mutex<Option<u64>>>,
+    pub player_entity_ids: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
 }
 
 fn generate_snapshots(
@@ -33,7 +37,7 @@ fn generate_snapshots(
     mut timer: Local<f32>,
 ) {
     *timer += time.delta_secs();
-    if *timer < 0.016 {
+    if *timer < 0.008 {
         return;
     }
     *timer = 0.0;
@@ -43,17 +47,14 @@ fn generate_snapshots(
         return;
     }
 
-    let mut new_positions = std::collections::HashMap::with_capacity(map_lock.len());
-    for (&id, &pos) in map_lock.iter() {
-        new_positions.insert(id, pos);
-    }
+    let new_positions = map_lock.clone();
 
     if let Ok(mut buffer) = ball_pos.snapshots.lock() {
         buffer.push_back(Snapshot {
             timestamp: std::time::Instant::now(),
             entities: new_positions,
         });
-        while buffer.len() > 20 {
+        while buffer.len() > 60 {
             buffer.pop_front();
         }
     }
@@ -63,6 +64,8 @@ fn generate_snapshots(
 pub struct ServerStatus {
     pub entity_count: Arc<AtomicU16>,
     pub node_count: Arc<AtomicU8>,
+    pub map_width: Arc<AtomicU8>,
+    pub ball_radius: Arc<AtomicU8>,
 }
 
 impl ServerStatus {
@@ -73,12 +76,20 @@ impl ServerStatus {
     pub fn get_node_count(&self) -> u8 {
         self.node_count.load(Ordering::Relaxed)
     }
+
+    pub fn get_map_width(&self) -> f32 {
+        self.map_width.load(Ordering::Relaxed) as f32
+    }
+
+    pub fn get_ball_radius(&self) -> f32 {
+        self.ball_radius.load(Ordering::Relaxed) as f32 / 10.0
+    }
 }
 
 #[derive(Clone)]
 pub struct Snapshot {
     pub timestamp: std::time::Instant,
-    pub entities: std::collections::HashMap<u64, (f32, f32, f32)>,
+    pub entities: std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))>,
 }
 
 #[derive(Resource, Default)]
@@ -121,12 +132,54 @@ fn send_player_state(
     }
 }
 
+fn check_roaming(
+    mut net: ResMut<NetworkResource>,
+    query: Query<&Transform, With<crate::PlayerShip>>,
+    server_status: Res<ServerStatus>,
+) {
+    if net.client.is_none() {
+        return;
+    }
+
+    let active_nodes = server_status.get_node_count().max(1) as usize;
+    if active_nodes <= 1 {
+        return;
+    }
+
+    if let Ok(transform) = query.get_single() {
+        let x = transform.translation.x;
+        let map_w = server_status.get_map_width().max(6.0);
+        let zone_width = map_w / active_nodes as f32;
+        let zone = (x / zone_width).floor() as usize;
+        let zone = zone.clamp(0, active_nodes - 1);
+
+        if zone != net.current_zone {
+            net.current_zone = zone;
+
+            let port = 5000 + zone as u16;
+            let addr_str = format!("127.0.0.1:{}", port);
+
+            if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                let client_lock = net.client.as_ref().unwrap().clone();
+                let rt_handle = net.runtime.handle().clone();
+
+                rt_handle.spawn(async move {
+                    let mut client = client_lock.lock().await;
+                    let _ = client.connect(addr).await;
+                });
+            }
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct NetworkResource {
     pub client: Option<Arc<Mutex<ZeusClient>>>,
     pub runtime: Runtime,
 
-    pub accumulated: Option<Arc<std::sync::Mutex<std::collections::HashMap<u64, (f32, f32, f32)>>>>,
+    pub accumulated:
+        Option<Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))>>>>,
+    pub current_zone: usize,
 }
 
 impl Default for NetworkResource {
@@ -135,6 +188,7 @@ impl Default for NetworkResource {
             client: None,
             runtime: Runtime::new().unwrap(),
             accumulated: None,
+            current_zone: 0,
         }
     }
 }
@@ -172,23 +226,22 @@ fn setup_network(
 
     let entity_count = status.entity_count.clone();
     let node_count = status.node_count.clone();
+    let map_width = status.map_width.clone();
+    let ball_radius = status.ball_radius.clone();
 
     let accumulated_positions = accumulated_state.positions.clone();
+    let accumulated_positions_bb = accumulated_state.player_entity_ids.clone();
     net.accumulated = Some(accumulated_positions.clone());
 
     let client_clone = client.clone();
     rt_handle.spawn(async move {
+        let accumulated_positions_bb = accumulated_positions_bb;
         let addr: std::net::SocketAddr = "127.0.0.1:5000".parse().unwrap();
-        println!("Attempting to connect to Mesh Node at {}...", addr);
-
         {
             let mut locked_client = client_clone.lock().await;
-            match locked_client.connect(addr).await {
-                Ok(_) => println!("✅ Connected to Mesh!"),
-                Err(e) => {
-                    eprintln!("❌ Connection failed: {}", e);
-                    return;
-                }
+            if let Err(e) = locked_client.connect(addr).await {
+                eprintln!("[Net] Connection failed: {}", e);
+                return;
             }
         }
 
@@ -207,6 +260,11 @@ fn setup_network(
                             let nodes = data[3];
                             entity_count.store(entities, Ordering::Relaxed);
                             node_count.store(nodes, Ordering::Relaxed);
+
+                            if data.len() >= 6 {
+                                map_width.store(data[4], Ordering::Relaxed);
+                                ball_radius.store(data[5], Ordering::Relaxed);
+                            }
                         } else if data.len() >= 1 && data[0] == 0xCC {
                             let bytes = &data[1..];
                             if let Ok(update) =
@@ -215,35 +273,42 @@ fn setup_network(
                                 if let Some(ghosts) = update.ghosts() {
                                     if let Ok(mut map) = accumulated_positions.lock() {
                                         for ghost in ghosts {
-                                            if let Some(pos) = ghost.position() {
-                                                let id = ghost.entity_id();
-                                                map.insert(id, (pos.x(), pos.y(), pos.z()));
-                                            }
-                                        }
-
-                                        static COUNTER: std::sync::atomic::AtomicU32 =
-                                            std::sync::atomic::AtomicU32::new(0);
-                                        let c = COUNTER.fetch_add(1, Ordering::Relaxed);
-                                        if c % 60 == 0 {
-                                            println!(
-                                                "[Net] === NPC Positions ({} total) ===",
-                                                map.len()
-                                            );
-                                            for (id, (x, y, z)) in map.iter().take(5) {
-                                                println!(
-                                                    "[Net]   Ball {}: x={:.2}, y={:.2}, z={:.2}",
-                                                    id, x, y, z
-                                                );
-                                            }
+                                            let id = ghost.entity_id();
+                                            let pos = ghost
+                                                .position()
+                                                .map(|p| (p.x(), p.y(), p.z()))
+                                                .unwrap_or((0.0, 0.0, 0.0));
+                                            let vel = ghost
+                                                .velocity()
+                                                .map(|v| (v.x(), v.y(), v.z()))
+                                                .unwrap_or((0.0, 0.0, 0.0));
+                                            map.insert(id, (pos, vel));
                                         }
                                     }
                                 }
                             }
                         } else if data.len() >= 3 && data[0] == 0xBB {
+                            let count =
+                                ((data[1] as u16) << 8) | (data[2] as u16);
+                            let mut ids = std::collections::HashSet::new();
+                            let mut offset = 3;
+                            for _ in 0..count {
+                                if offset + 8 <= data.len() {
+                                    let id = u64::from_le_bytes(
+                                        data[offset..offset + 8].try_into().unwrap(),
+                                    );
+                                    ids.insert(id);
+                                    offset += 8;
+                                }
+                            }
+                            if let Ok(mut set) =
+                                accumulated_positions_bb.lock()
+                            {
+                                *set = ids;
+                            }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("[Net] Read Error (Connection lost?): {}", e);
+                    Err(_) => {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 }
@@ -252,4 +317,143 @@ fn setup_network(
             }
         }
     });
+}
+
+pub fn encode_0xdd(count: u16) -> Vec<u8> {
+    vec![0xDD, (count >> 8) as u8, (count & 0xFF) as u8]
+}
+
+pub fn decode_0xdd(data: &[u8]) -> u16 {
+    if data.len() < 3 || data[0] != 0xDD {
+        return 0;
+    }
+    ((data[1] as u16) << 8) | (data[2] as u16)
+}
+
+pub fn encode_0xbb(player_ids: &[u64]) -> Vec<u8> {
+    let count = player_ids.len() as u16;
+    let mut buf = Vec::with_capacity(3 + player_ids.len() * 8);
+    buf.push(0xBB);
+    buf.push((count >> 8) as u8);
+    buf.push((count & 0xFF) as u8);
+    for id in player_ids {
+        buf.extend_from_slice(&id.to_le_bytes());
+    }
+    buf
+}
+
+pub fn decode_0xbb(data: &[u8]) -> Vec<u64> {
+    if data.len() < 3 || data[0] != 0xBB {
+        return Vec::new();
+    }
+    let count = ((data[1] as u16) << 8) | (data[2] as u16);
+    let mut ids = Vec::with_capacity(count as usize);
+    let mut offset = 3;
+    for _ in 0..count {
+        if offset + 8 <= data.len() {
+            let id = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+            ids.push(id);
+            offset += 8;
+        }
+    }
+    ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_0xdd_encode() {
+        let buf = encode_0xdd(100);
+        assert_eq!(buf, vec![0xDD, 0x00, 0x64]);
+    }
+
+    #[test]
+    fn test_0xdd_decode() {
+        let buf = vec![0xDD, 0x00, 0x64];
+        assert_eq!(decode_0xdd(&buf), 100);
+    }
+
+    #[test]
+    fn test_extrapolation_basic() {
+        let pos = (10.0f32, 0.0, 0.0);
+        let vel = (5.0f32, 0.0, 0.0);
+        let elapsed = 0.02f32;
+        let result = (pos.0 + vel.0 * elapsed, pos.1 + vel.1 * elapsed, pos.2 + vel.2 * elapsed);
+        assert!((result.0 - 10.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_extrapolation_capped() {
+        let pos = (10.0f32, 0.0, 0.0);
+        let vel = (5.0f32, 0.0, 0.0);
+        let elapsed = 0.1f32;
+        let capped = elapsed.min(0.05);
+        let result = (pos.0 + vel.0 * capped, pos.1 + vel.1 * capped, pos.2 + vel.2 * capped);
+        assert!((result.0 - 10.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_snapshot_stores_velocity() {
+        let mut entities = std::collections::HashMap::new();
+        entities.insert(1u64, ((1.0f32, 2.0, 3.0), (4.0f32, 5.0, 6.0)));
+        let snap = Snapshot {
+            timestamp: std::time::Instant::now(),
+            entities,
+        };
+        let (pos, vel) = snap.entities.get(&1).unwrap();
+        assert_eq!(*pos, (1.0, 2.0, 3.0));
+        assert_eq!(*vel, (4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn test_0xbb_encode() {
+        let ids = vec![100u64, 200, 300];
+        let buf = encode_0xbb(&ids);
+        assert_eq!(buf[0], 0xBB);
+        assert_eq!(buf[1], 0x00);
+        assert_eq!(buf[2], 0x03);
+        assert_eq!(buf.len(), 3 + 3 * 8);
+        let id1 = u64::from_le_bytes(buf[3..11].try_into().unwrap());
+        assert_eq!(id1, 100);
+    }
+
+    #[test]
+    fn test_0xbb_decode() {
+        let ids = vec![111u64, 222, 333];
+        let buf = encode_0xbb(&ids);
+        let decoded = decode_0xbb(&buf);
+        assert_eq!(decoded, ids);
+    }
+
+    #[test]
+    fn test_0xbb_empty() {
+        let buf = encode_0xbb(&[]);
+        assert_eq!(buf, vec![0xBB, 0x00, 0x00]);
+        let decoded = decode_0xbb(&buf);
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_player_id_set_updates() {
+        let set = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<u64>::new()));
+        let buf1 = encode_0xbb(&[10, 20]);
+        let ids1 = decode_0xbb(&buf1);
+        {
+            let mut s = set.lock().unwrap();
+            *s = ids1.into_iter().collect();
+        }
+        assert_eq!(set.lock().unwrap().len(), 2);
+
+        let buf2 = encode_0xbb(&[30, 40, 50]);
+        let ids2 = decode_0xbb(&buf2);
+        {
+            let mut s = set.lock().unwrap();
+            *s = ids2.into_iter().collect();
+        }
+        assert_eq!(set.lock().unwrap().len(), 3);
+        assert!(!set.lock().unwrap().contains(&10));
+        assert!(set.lock().unwrap().contains(&30));
+    }
 }

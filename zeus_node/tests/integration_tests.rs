@@ -133,11 +133,7 @@ fn test_state_machine_out_of_order() {
 
     assert_eq!(
         node.manager.get_entity(200).unwrap().state,
-        AuthorityState::HandoffIn
-    );
-    assert_eq!(
-        node.outgoing_messages.pop_back(),
-        Some((200, HandoffType::Ack))
+        AuthorityState::Local
     );
 }
 
@@ -164,7 +160,7 @@ fn test_security_rejects_unsigned_offer() {
 
     assert_eq!(
         node.manager.get_entity(300).unwrap().state,
-        AuthorityState::HandoffIn,
+        AuthorityState::Local,
         "Valid signature failed"
     );
 

@@ -123,11 +123,13 @@ async fn test_data_integrity_sequence() {
     let mut expected_x = 0.0;
     for _ in 0..10 {
         if let Some(bytes) = rx.recv().await {
-            if let Ok(ghost) = zeus_common::flatbuffers::root::<zeus_common::Ghost>(&bytes) {
-                let pos = ghost.position().unwrap();
-                println!("Received X={}", pos.x());
-                assert_eq!(pos.x(), expected_x);
-                expected_x += 1.0;
+            if let Ok(msg) = zeus_common::flatbuffers::root::<zeus_common::HandoffMsg>(&bytes) {
+                if let Some(ghost) = msg.state() {
+                    let pos = ghost.position().unwrap();
+                    println!("Received X={}", pos.x());
+                    assert_eq!(pos.x(), expected_x);
+                    expected_x += 1.0;
+                }
             }
         }
     }

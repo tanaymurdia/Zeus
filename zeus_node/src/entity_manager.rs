@@ -81,6 +81,10 @@ impl EntityManager {
             e.state = new_state;
         }
     }
+
+    pub fn set_boundary(&mut self, boundary: f32) {
+        self.boundary = boundary;
+    }
 }
 
 #[cfg(test)]

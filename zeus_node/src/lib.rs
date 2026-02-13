@@ -1,6 +1,7 @@
 pub mod discovery;
 pub mod engine;
 pub mod entity_manager;
+pub mod game_loop;
 pub mod node_actor;
 
 use zeus_common::HandoffMsg;

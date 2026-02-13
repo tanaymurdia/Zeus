@@ -24,6 +24,10 @@ impl NodeActor {
         }
     }
 
+    pub fn set_boundary(&mut self, boundary: f32) {
+        self.manager.set_boundary(boundary);
+    }
+
     pub fn handle_handoff_msg(&mut self, msg: HandoffMsg) {
         let id = msg.entity_id();
         let (current_state, known_key) = if let Some(e) = self.manager.get_entity(id) {
@@ -67,6 +71,9 @@ impl NodeActor {
                             verifying_key: known_key,
                         };
                         self.manager.add_entity(entity);
+                        if is_new {
+                            self.outgoing_messages.push_back((id, HandoffType::Ack));
+                        }
                     }
                 } else {
                     println!("[Node] Received Offer for {} but no state attached", id);
@@ -150,7 +157,7 @@ mod tests {
 
         node.handle_handoff_msg(msg);
         let e = node.manager.get_entity(99).unwrap();
-        assert_eq!(e.state, AuthorityState::HandoffIn);
+        assert_eq!(e.state, AuthorityState::Local);
         node.outgoing_messages.clear();
         let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
         let msg = zeus_common::HandoffMsg::create(

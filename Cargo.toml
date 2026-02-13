@@ -4,6 +4,7 @@ members = [
     "zeus_node",
     "zeus_transport",
     "zeus_client",
+    "zeus_client_ffi",
     "cosmic_drift",
     "cosmic_drift_server",
 ]

@@ -1,0 +1,16 @@
+[package]
+name = "zeus_client_ffi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zeus_client = { version = "0.1.0", path = "../zeus_client" }
+zeus_common = { version = "0.1.0", path = "../zeus_common" }
+tokio = { version = "1.0", features = ["full"] }
+
+[dev-dependencies]
+zeus_node = { version = "0.1.0", path = "../zeus_node" }
+zeus_transport = { version = "0.1.0", path = "../zeus_transport" }

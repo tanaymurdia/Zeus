@@ -13,5 +13,8 @@ tokio = { version = "1.49.0", features = ["full"] }
 zeus_common = { version = "0.1.0", path = "../zeus_common" }
 zeus_transport = { version = "0.1.0", path = "../zeus_transport" }
 
+[dev-dependencies]
+zeus_client = { version = "0.1.0", path = "../zeus_client" }
+
 [lib]
 doctest = false

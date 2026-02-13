@@ -4,30 +4,20 @@ use bevy_rapier3d::prelude::*;
 mod network;
 mod visuals;
 
-#[derive(Component)]
-struct PlayerShip;
+use network::ServerStatus;
+use visuals::ZONE_COLORS;
 
 #[derive(Component)]
-struct NpcEntity {
-    #[allow(dead_code)]
-    id: u64,
-}
+struct PlayerShip;
 
 #[derive(Component)]
 struct ServerBall {
     pub id: u64,
 }
 
-#[derive(Resource, Default)]
-pub struct SpawnCounter {
-    pub count: u64,
-    pub next_id: u64,
-}
-
 fn main() {
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.1, 0.1, 0.1)))
-        .init_resource::<SpawnCounter>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Cosmic Drift: Zeus Hypervisor Demo".into(),
@@ -85,6 +75,7 @@ fn update_hud(
     player_query: Query<&Transform, With<PlayerShip>>,
     net: Res<network::NetworkResource>,
     server_status: Res<network::ServerStatus>,
+    accumulated_state: Res<network::AccumulatedState>,
 ) {
     for mut text in query.iter_mut() {
         let status = if net.client.is_some() {
@@ -93,28 +84,41 @@ fn update_hud(
             "Connecting..."
         };
         let mut pos_str = String::from("Pos: N/A");
+        let mut zone = 0usize;
 
+        let mesh_nodes = server_status.get_node_count().max(1);
         if let Ok(transform) = player_query.get_single() {
+            let map_w = server_status.get_map_width().max(6.0);
+            let zone_width = map_w / mesh_nodes as f32;
+            zone = (transform.translation.x / zone_width).floor() as usize;
+            zone = zone.clamp(0, (mesh_nodes as usize).saturating_sub(1).max(0));
             pos_str = format!(
                 "Pos: {:.1}, {:.1}, {:.1}",
                 transform.translation.x, transform.translation.y, transform.translation.z
             );
         }
-
         let backend_entities = server_status.get_entity_count();
-        let mesh_nodes = server_status.get_node_count();
+
+        let player_count = accumulated_state
+            .player_entity_ids
+            .lock()
+            .ok()
+            .map(|s| s.len())
+            .unwrap_or(0);
+        let connected_port = 5000 + net.current_zone as u16;
 
         let load_status = if backend_entities > 2000 {
-            "⚠️ CRITICAL LOAD"
+            "CRITICAL LOAD"
         } else if backend_entities > 1500 {
-            "⚡ HIGH LOAD"
+            "HIGH LOAD"
         } else {
-            "✓ Normal"
+            "Normal"
         };
 
         **text = format!(
-            "Zeus Hypervisor Demo\nStatus: {}\n{}\n\n━━━ BACKEND STATUS ━━━\nMesh Nodes: {}\nBackend Entities: {}\nLoad: {}\n\n[M] Add Load  [N] Add Load (small)",
-            status, pos_str, mesh_nodes, backend_entities, load_status
+            "Zeus Hypervisor Demo\nStatus: {}\n{}\nZone: {} | Node: 127.0.0.1:{}\nPlayers: {} | Tick: 128Hz\n\n--- BACKEND STATUS ---\nMesh Nodes: {}\nGlobal Cluster Entities: {}\nLoad: {}\n\n[M] +500 server balls  [N] +100 server balls",
+            status, pos_str, zone, connected_port, player_count + 1,
+            mesh_nodes, backend_entities, load_status
         );
     }
 
@@ -175,13 +179,13 @@ fn setup_scene(
             emissive: LinearRgba::rgb(0.0, 2.0, 2.0),
             ..default()
         })),
-        Transform::from_xyz(10.0, 2.0, 0.0),
+        Transform::from_xyz(10.0, 0.0, 0.0),
         RigidBody::Dynamic,
-        Collider::ball(1.0),
+        Collider::ball(0.8),
         Velocity::default(),
         Damping {
-            linear_damping: 0.5,
-            angular_damping: 0.5,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
         },
         ExternalImpulse::default(),
         PlayerShip,
@@ -198,14 +202,10 @@ fn setup_scene(
 }
 
 fn spawn_entities_on_keypress(
-    mut commands: Commands,
     input: Res<ButtonInput<KeyCode>>,
-    mut counter: ResMut<SpawnCounter>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    player_query: Query<&Transform, With<PlayerShip>>,
+    net: Res<network::NetworkResource>,
 ) {
-    let spawn_count = if input.just_pressed(KeyCode::KeyN) {
+    let spawn_count: u16 = if input.just_pressed(KeyCode::KeyN) {
         100
     } else if input.just_pressed(KeyCode::KeyM) {
         500
@@ -213,70 +213,19 @@ fn spawn_entities_on_keypress(
         0
     };
 
-    if spawn_count == 0 {
+    if spawn_count == 0 || net.client.is_none() {
         return;
     }
 
-    let base_pos = player_query
-        .get_single()
-        .map(|t| t.translation)
-        .unwrap_or(Vec3::new(10.0, 2.0, 0.0));
-
-    let mesh = meshes.add(Sphere::new(0.3).mesh());
-    let material = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.5, 0.0),
-        emissive: LinearRgba::rgb(1.0, 0.3, 0.0),
-        ..default()
+    let buf = network::encode_0xdd(spawn_count);
+    let client_lock = net.client.as_ref().unwrap().clone();
+    let rt_handle = net.runtime.handle().clone();
+    rt_handle.spawn(async move {
+        let client = client_lock.lock().await;
+        if let Some(conn) = client.connection() {
+            let _ = conn.send_datagram(buf.into());
+        }
     });
-    let visual_limit = 50;
-    let already_visual = counter.count.min(visual_limit as u64);
-    let can_spawn_visual = (visual_limit as u64).saturating_sub(already_visual) as u64;
-    let visual_to_spawn = (spawn_count as u64).min(can_spawn_visual);
-
-    for _i in 0..visual_to_spawn {
-        let id = counter.next_id;
-        counter.next_id += 1;
-
-        let offset = Vec3::new(
-            (id as f32 * 0.7).sin() * 20.0,
-            0.5,
-            (id as f32 * 1.3).cos() * 20.0,
-        );
-
-        commands.spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::from_translation(base_pos + offset),
-            RigidBody::Dynamic,
-            Collider::ball(0.3),
-            Velocity {
-                linvel: Vec3::new(
-                    (id as f32 * 0.3).sin() * 5.0,
-                    0.0,
-                    (id as f32 * 0.5).cos() * 5.0,
-                ),
-                ..default()
-            },
-            Damping {
-                linear_damping: 0.3,
-                angular_damping: 0.3,
-            },
-            NpcEntity { id },
-        ));
-    }
-
-    let virtual_count = spawn_count as u64 - visual_to_spawn;
-    counter.next_id += virtual_count;
-    counter.count += spawn_count as u64;
-
-    println!(
-        "[Demo] Spawned {} entities ({} visual, {} virtual). Total: {}",
-        spawn_count, visual_to_spawn, virtual_count, counter.count
-    );
-
-    if counter.count > 2000 {
-        println!("[Demo] ⚠️  OVER 2000 ENTITIES - Check server for CRITICAL LOAD warning!");
-    }
 }
 
 fn camera_follow(
@@ -299,14 +248,20 @@ fn camera_follow(
 }
 
 fn render_server_balls(
+    server_status: Res<ServerStatus>,
     mut commands: Commands,
-    ball_positions: Res<network::BallPositions>,
+    ball_pos: Res<network::BallPositions>,
     accumulated_state: Res<network::AccumulatedState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut ball_query: Query<(Entity, &mut Transform, &ServerBall)>,
+    mut ball_query: Query<(
+        Entity,
+        &mut Transform,
+        &ServerBall,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
 ) {
-    let snapshots = match ball_positions.snapshots.lock() {
+    let snapshots = match ball_pos.snapshots.lock() {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -315,7 +270,7 @@ fn render_server_balls(
         return;
     }
 
-    let delay = std::time::Duration::from_millis(33);
+    let delay = std::time::Duration::from_millis(15);
 
     let now = std::time::Instant::now();
     let render_time = if now > snapshots[0].timestamp + delay {
@@ -349,10 +304,10 @@ fn render_server_balls(
             0.0
         };
 
-        for (&id, &pos_b_tuple) in &b.entities {
+        for (&id, &(pos_b_tuple, _vel_b)) in &b.entities {
             let pos_b = Vec3::new(pos_b_tuple.0, pos_b_tuple.1, pos_b_tuple.2);
 
-            let pos = if let Some(&pos_a_tuple) = a.entities.get(&id) {
+            let pos = if let Some(&(pos_a_tuple, _)) = a.entities.get(&id) {
                 let pos_a = Vec3::new(pos_a_tuple.0, pos_a_tuple.1, pos_a_tuple.2);
                 pos_a.lerp(pos_b, alpha)
             } else {
@@ -360,11 +315,15 @@ fn render_server_balls(
             };
             target_positions.insert(id, pos);
         }
-    } else {
-        if let Some(last) = snapshots.back() {
-            for (&id, &pos) in &last.entities {
-                target_positions.insert(id, Vec3::new(pos.0, pos.1, pos.2));
-            }
+    } else if let Some(last) = snapshots.back() {
+        let elapsed_since_last = render_time
+            .duration_since(last.timestamp)
+            .as_secs_f32()
+            .min(0.05);
+        for (&id, &(pos_tuple, vel_tuple)) in &last.entities {
+            let pos = Vec3::new(pos_tuple.0, pos_tuple.1, pos_tuple.2);
+            let vel = Vec3::new(vel_tuple.0, vel_tuple.1, vel_tuple.2);
+            target_positions.insert(id, pos + vel * elapsed_since_last);
         }
     }
 
@@ -373,35 +332,48 @@ fn render_server_balls(
         target_positions.remove(&pid);
     }
 
-    if !target_positions.is_empty() {
-        static RENDER_CTR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let c = RENDER_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if c % 120 == 0 {
-            let sample: Vec<_> = target_positions.iter().take(5).collect();
-            println!(
-                "[Render] {} balls. Sample: {:?}",
-                target_positions.len(),
-                sample
-            );
-        }
-    }
-
     let mut existing_balls = std::collections::HashMap::new();
-    for (entity, _, server_ball) in ball_query.iter() {
+    for (entity, _, server_ball, _) in ball_query.iter() {
         existing_balls.insert(server_ball.id, entity);
     }
 
+    let remote_player_ids = accumulated_state
+        .player_entity_ids
+        .lock()
+        .ok()
+        .map(|s| s.clone())
+        .unwrap_or_default();
+
     for (&id, &pos) in &target_positions {
+        let is_player = remote_player_ids.contains(&id);
+        let (r, g, b) = if is_player {
+            (1.0, 0.0, 1.0)
+        } else {
+            let zone = (pos.x / 6.0).floor() as usize;
+            let zone = zone.clamp(0, 3);
+            ZONE_COLORS[zone]
+        };
+
         if let Some(&entity) = existing_balls.get(&id) {
-            if let Ok((_, mut transform, _)) = ball_query.get_mut(entity) {
+            if let Ok((_, mut transform, _, material_handle)) = ball_query.get_mut(entity) {
                 transform.translation = pos;
+                if let Some(material) = materials.get_mut(material_handle) {
+                    material.base_color = Color::srgb(r, g, b);
+                }
             }
         } else {
+            let radius = if is_player {
+                1.0
+            } else {
+                let r = server_status.get_ball_radius();
+                if r < 0.1 { 0.8 } else { r }
+            };
+
             commands.spawn((
-                Mesh3d(meshes.add(Sphere::new(0.5).mesh())),
+                Mesh3d(meshes.add(Sphere::new(radius).mesh())),
                 MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 0.5, 0.0),
-                    emissive: LinearRgba::rgb(1.0, 0.3, 0.0),
+                    base_color: Color::srgb(r, g, b),
+                    emissive: LinearRgba::rgb(r * 0.5, g * 0.5, b * 0.5),
                     ..default()
                 })),
                 Transform::from_translation(pos),

@@ -43,16 +43,12 @@ pub struct ZeusEngine {
     #[allow(dead_code)]
     pub config: ZeusConfig,
     pub signing_key: zeus_common::SigningKey,
+    pub client_datagrams: Vec<Vec<u8>>,
 }
 
 impl ZeusEngine {
     pub async fn new(config: ZeusConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        println!(
-            "[Zeus] Setup Networking: Binding to {}...",
-            config.bind_addr
-        );
         let (endpoint, _) = make_promiscuous_endpoint(config.bind_addr)?;
-        println!("[Zeus] Listening on {}", endpoint.local_addr()?);
 
         let (tx, rx) = mpsc::channel(100);
 
@@ -60,7 +56,6 @@ impl ZeusEngine {
         let tx_accept = tx.clone();
         tokio::spawn(async move {
             while let Some(conn) = endpoint_clone.accept().await {
-                println!("[Zeus] Incoming Handshake...");
                 if let Ok(connection) = conn.await {
                     let _ = tx_accept
                         .send(NetworkEvent::NewConnection(connection))
@@ -70,9 +65,7 @@ impl ZeusEngine {
         });
 
         if let Some(seed_addr) = config.seed_addr {
-            println!("[Zeus] Connecting to Seed {}...", seed_addr);
             let connection = endpoint.connect(seed_addr, "localhost")?.await?;
-            println!("[Zeus] Connected to Seed.");
             tx.send(NetworkEvent::NewConnection(connection)).await?;
         }
 
@@ -91,6 +84,7 @@ impl ZeusEngine {
             network_tx: tx,
             config,
             signing_key,
+            client_datagrams: Vec::new(),
         })
     }
 
@@ -111,8 +105,13 @@ impl ZeusEngine {
         }
     }
 
+    pub fn set_boundary(&mut self, boundary: f32) {
+        self.node.set_boundary(boundary);
+    }
+
     pub async fn tick(&mut self, dt: f32) -> Result<Vec<ZeusEvent>, Box<dyn std::error::Error>> {
         let mut app_events = Vec::new();
+        self.client_datagrams.clear();
 
         self.node.update(dt);
         self.discovery.update(dt);
@@ -123,7 +122,6 @@ impl ZeusEngine {
         while let Ok(event) = self.network_rx.try_recv() {
             match event {
                 NetworkEvent::NewConnection(conn) => {
-                    println!("[Zeus] New Connection from {}", conn.remote_address());
                     self.connections.push(conn.clone());
                     let tx_reader = self.network_tx.clone();
                     let conn_reader = conn.clone();
@@ -197,6 +195,8 @@ impl ZeusEngine {
                             zeus_common::flatbuffers::root::<zeus_common::DiscoveryMsg>(&bytes)
                         {
                             self.discovery.process_packet(msg, conn.remote_address());
+                        } else if !bytes.is_empty() {
+                            self.client_datagrams.push(bytes);
                         }
                     }
                 }
@@ -207,7 +207,10 @@ impl ZeusEngine {
         while let Some((id, msg_type)) = self.node.outgoing_messages.pop_front() {
             let msg_bytes = build_handoff_msg(id, msg_type, &self.node);
             for conn in &self.connections {
-                if let Ok(mut stream) = conn.open_uni().await {
+                let timeout_dur = std::time::Duration::from_millis(2);
+                if let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                {
                     let _ = stream.write_all(&msg_bytes).await;
                     let _ = stream.finish();
                 }
@@ -228,35 +231,34 @@ impl ZeusEngine {
         use zeus_common::flatbuffers::FlatBufferBuilder;
         let mut builder = FlatBufferBuilder::new();
 
-        let entities: Vec<_> = self.node.manager.entities.values().collect();
+        let entities: Vec<_> = self
+            .node
+            .manager
+            .entities
+            .values()
+            .filter(|e| e.state != crate::entity_manager::AuthorityState::Remote)
+            .collect();
 
-        const BATCH_SIZE: usize = 3;
+        let empty_sig = [0u8; 0];
 
         let mut dead_indices: Vec<usize> = Vec::new();
+        let max_dg = self
+            .connections
+            .first()
+            .and_then(|c| c.max_datagram_size())
+            .unwrap_or(1200);
+        let per_entity_bytes: usize = 60;
+        let overhead: usize = 80;
+        let batch_size = ((max_dg.saturating_sub(overhead)) / per_entity_bytes).max(1);
 
-        for chunk in entities.chunks(BATCH_SIZE) {
+        for chunk in entities.chunks(batch_size) {
             builder.reset();
-            let mut ghosts = Vec::new();
-
-            let mut serializer = zeus_common::GhostSerializer::new();
-            serializer.set_keypair(self.signing_key.clone());
+            let mut ghosts = Vec::with_capacity(chunk.len());
 
             for entity in chunk {
                 let pos = Vec3::new(entity.pos.0, entity.pos.1, entity.pos.2);
                 let vel = Vec3::new(entity.vel.0, entity.vel.1, entity.vel.2);
-
-                use zeus_common::Signer;
-                let mut data = Vec::with_capacity(32);
-                data.extend_from_slice(&entity.id.to_le_bytes());
-                data.extend_from_slice(&entity.pos.0.to_le_bytes());
-                data.extend_from_slice(&entity.pos.1.to_le_bytes());
-                data.extend_from_slice(&entity.pos.2.to_le_bytes());
-                data.extend_from_slice(&entity.vel.0.to_le_bytes());
-                data.extend_from_slice(&entity.vel.1.to_le_bytes());
-                data.extend_from_slice(&entity.vel.2.to_le_bytes());
-
-                let sig_bytes = self.signing_key.sign(&data).to_bytes();
-                let sig = builder.create_vector(&sig_bytes);
+                let sig = builder.create_vector(&empty_sig);
 
                 ghosts.push(Ghost::create(
                     &mut builder,
@@ -289,7 +291,7 @@ impl ZeusEngine {
                 match conn.send_datagram(payload.clone().into()) {
                     Ok(_) => {}
                     Err(e) => {
-                        println!("[Zeus] Send Error to {}: {}", conn.remote_address(), e);
+                        let _ = e;
                         dead_indices.push(i);
                     }
                 }
@@ -300,7 +302,7 @@ impl ZeusEngine {
         dead_indices.dedup();
         for index in dead_indices.iter().rev() {
             if *index < self.connections.len() {
-                println!("[Zeus] Pruning dead connection at index {}", index);
+                let _ = index;
                 self.connections.swap_remove(*index);
             }
         }
@@ -340,4 +342,171 @@ fn build_handoff_msg(id: u64, msg_type: HandoffType, node: &NodeActor) -> Vec<u8
 
     builder.finish(msg, None);
     builder.finished_data().to_vec()
+}
+
+pub fn build_broadcast_datagrams(engine: &ZeusEngine) -> Vec<Vec<u8>> {
+    use zeus_common::flatbuffers::FlatBufferBuilder;
+    let mut builder = FlatBufferBuilder::new();
+    let entities: Vec<_> = engine.node.manager.entities.values().collect();
+    let max_dg = engine
+        .connections
+        .first()
+        .and_then(|c| c.max_datagram_size())
+        .unwrap_or(1200);
+    let per_entity_bytes: usize = 60;
+    let overhead: usize = 80;
+    let batch_size = ((max_dg.saturating_sub(overhead)) / per_entity_bytes).max(1);
+    let empty_sig = [0u8; 0];
+    let mut datagrams = Vec::new();
+
+    for chunk in entities.chunks(batch_size) {
+        builder.reset();
+        let mut ghosts = Vec::with_capacity(chunk.len());
+        for entity in chunk {
+            let pos = Vec3::new(entity.pos.0, entity.pos.1, entity.pos.2);
+            let vel = Vec3::new(entity.vel.0, entity.vel.1, entity.vel.2);
+            let sig = builder.create_vector(&empty_sig);
+            ghosts.push(Ghost::create(
+                &mut builder,
+                &zeus_common::GhostArgs {
+                    entity_id: entity.id,
+                    position: Some(&pos),
+                    velocity: Some(&vel),
+                    signature: Some(sig),
+                },
+            ));
+        }
+        let ghosts_vec = builder.create_vector(&ghosts);
+        let update_msg = zeus_common::StateUpdate::create(
+            &mut builder,
+            &zeus_common::StateUpdateArgs {
+                ghosts: Some(ghosts_vec),
+            },
+        );
+        builder.finish(update_msg, None);
+        let bytes = builder.finished_data();
+        let mut payload = Vec::with_capacity(1 + bytes.len());
+        payload.push(0xCC);
+        payload.extend_from_slice(bytes);
+        datagrams.push(payload);
+    }
+    datagrams
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity_manager::Entity;
+
+    #[tokio::test]
+    async fn test_broadcast_no_signature() {
+        let config = ZeusConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            seed_addr: None,
+            boundary: 100.0,
+            margin: 5.0,
+        };
+        let mut engine = ZeusEngine::new(config).await.unwrap();
+        engine.node.manager.add_entity(Entity {
+            id: 1,
+            pos: (1.0, 2.0, 3.0),
+            vel: (0.0, 0.0, 0.0),
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+
+        let datagrams = build_broadcast_datagrams(&engine);
+        assert_eq!(datagrams.len(), 1);
+
+        let data = &datagrams[0];
+        assert_eq!(data[0], 0xCC);
+        let update = zeus_common::flatbuffers::root::<zeus_common::StateUpdate>(&data[1..]).unwrap();
+        let ghost = update.ghosts().unwrap().get(0);
+        let sig = ghost.signature().unwrap();
+        assert!(
+            sig.bytes().is_empty() || sig.bytes().iter().all(|b| *b == 0),
+            "Broadcast signature should be empty or zeroed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_batch_size() {
+        let config = ZeusConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            seed_addr: None,
+            boundary: 100.0,
+            margin: 5.0,
+        };
+        let mut engine = ZeusEngine::new(config).await.unwrap();
+        for i in 0..100 {
+            engine.node.manager.add_entity(Entity {
+                id: i,
+                pos: (0.0, 0.0, 0.0),
+                vel: (0.0, 0.0, 0.0),
+                state: AuthorityState::Local,
+                verifying_key: None,
+            });
+        }
+
+        let datagrams = build_broadcast_datagrams(&engine);
+        assert!(
+            datagrams.len() >= 2,
+            "100 entities should produce multiple datagrams, got {}",
+            datagrams.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handoff_still_signed() {
+        let config = ZeusConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            seed_addr: None,
+            boundary: 100.0,
+            margin: 5.0,
+        };
+        let _engine = ZeusEngine::new(config).await.unwrap();
+        let mut node = NodeActor::new(100.0, 5.0);
+        node.manager.add_entity(Entity {
+            id: 42,
+            pos: (1.0, 2.0, 3.0),
+            vel: (4.0, 5.0, 6.0),
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+
+        let msg_bytes = build_handoff_msg(42, HandoffType::Offer, &node);
+        let msg = zeus_common::flatbuffers::root::<HandoffMsg>(&msg_bytes).unwrap();
+        let ghost = msg.state().unwrap();
+        let sig = ghost.signature().unwrap();
+        assert_eq!(sig.bytes().len(), 64, "Handoff messages should still have 64-byte signature");
+    }
+
+    #[tokio::test]
+    async fn test_tick_budget_1000_entities() {
+        let config = ZeusConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            seed_addr: None,
+            boundary: 100.0,
+            margin: 5.0,
+        };
+        let mut engine = ZeusEngine::new(config).await.unwrap();
+        for i in 0..1000 {
+            engine.node.manager.add_entity(Entity {
+                id: i,
+                pos: (i as f32, 0.0, 0.0),
+                vel: (1.0, 0.0, 0.0),
+                state: AuthorityState::Local,
+                verifying_key: None,
+            });
+        }
+
+        let start = std::time::Instant::now();
+        engine.broadcast_state_to_clients().await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 5,
+            "Broadcast of 1000 entities should take < 5ms, took {}ms",
+            elapsed.as_millis()
+        );
+    }
 }
