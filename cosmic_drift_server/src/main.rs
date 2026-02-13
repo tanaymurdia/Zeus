@@ -61,7 +61,6 @@ struct PhysicsWorld {
     balls: HashMap<u64, Ball>,
     server_ball_ids: HashSet<u64>,
     next_ball_id: u64,
-    split_count: u32,
 }
 
 impl PhysicsWorld {
@@ -128,7 +127,6 @@ impl PhysicsWorld {
             balls: HashMap::new(),
             server_ball_ids: HashSet::new(),
             next_ball_id: 1,
-            split_count: 0,
         }
     }
 
@@ -143,16 +141,16 @@ impl PhysicsWorld {
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(vector![x, y, z])
             .linvel(vector![5.0, 0.0, 0.0])
-            .linear_damping(0.0)
-            .angular_damping(0.0)
+            .linear_damping(1.5)
+            .angular_damping(1.0)
             .ccd_enabled(true)
             .build();
         let handle = self.rigid_body_set.insert(rigid_body);
 
         let collider = ColliderBuilder::ball(0.8)
-            .restitution(0.8)
-            .friction(0.05)
-            .density(1.0)
+            .restitution(0.6)
+            .friction(0.3)
+            .density(8.0)
             .build();
         self.collider_set
             .insert_with_parent(collider, handle, &mut self.rigid_body_set);
@@ -182,15 +180,15 @@ impl PhysicsWorld {
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(vector![pos.0, pos.1, pos.2])
             .linvel(vector![vel.0, vel.1, vel.2])
-            .linear_damping(0.0)
-            .angular_damping(0.0)
+            .linear_damping(1.5)
+            .angular_damping(1.0)
             .ccd_enabled(true)
             .build();
         let handle = self.rigid_body_set.insert(rigid_body);
         let collider = ColliderBuilder::ball(0.8)
-            .restitution(0.8)
-            .friction(0.05)
-            .density(1.0)
+            .restitution(0.6)
+            .friction(0.3)
+            .density(8.0)
             .build();
         self.collider_set
             .insert_with_parent(collider, handle, &mut self.rigid_body_set);
@@ -211,9 +209,9 @@ impl PhysicsWorld {
         let handle = self.rigid_body_set.insert(rigid_body);
 
         let collider = ColliderBuilder::ball(0.8)
-            .restitution(0.8)
-            .friction(0.05)
-            .density(1.0)
+            .restitution(0.6)
+            .friction(0.3)
+            .density(8.0)
             .build();
         self.collider_set
             .insert_with_parent(collider, handle, &mut self.rigid_body_set);
@@ -259,12 +257,6 @@ impl PhysicsWorld {
             if let Some(rb) = self.rigid_body_set.get_mut(ball.rigid_body_handle) {
                 rb.wake_up(true);
             }
-        }
-
-        let threshold = 5 * (self.split_count as usize + 1);
-        if self.balls.len() > threshold && self.split_count < 3 {
-            self.split_count += 1;
-            println!("REQUEST_SPLIT");
         }
 
         self.physics_pipeline.step(
@@ -442,14 +434,17 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
     println!("[Orchestrator] Chain Active: Node 0");
     println!("[Orchestrator] Autoscaling enabled. Press Ctrl+C to stop.");
 
+    let mut last_spawn = std::time::Instant::now();
+    let spawn_cooldown = std::time::Duration::from_secs(3);
+
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 break;
             }
             Some(_) = rx.recv() => {
-                if next_id < 4 {
-                    println!("[Orchestrator] ⚠️ SPLIT REQUEST RECEIVED! Spawning Node {}...", next_id);
+                if next_id < 4 && last_spawn.elapsed() >= spawn_cooldown {
+                    println!("[Orchestrator] ⚠️ SPLIT REQUEST from Node 0! Spawning Node {}...", next_id);
                     let port = start_port + next_id as u16;
                     let boundary = 24.0;
                     let peer = port - 1;
@@ -459,6 +454,7 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
                         monitor_node(next_id, child.stdout.take(), child.stderr.take(), tx.clone());
                         nodes.push(child);
                         next_id += 1;
+                        last_spawn = std::time::Instant::now();
                     }
                 }
             }
@@ -499,13 +495,14 @@ async fn run_physics_node(
     let dt = 1.0 / 128.0;
     let mut spawn_counter: u32 = 0;
     let mut diag_counter: u32 = 0;
+    let mut last_split_request: usize = 0;
 
     loop {
         let loop_start = std::time::Instant::now();
 
         if id == 0 && game_loop.world.ball_count() < 50 {
             spawn_counter += 1;
-            if spawn_counter % 120 == 0 {
+            if spawn_counter % 256 == 0 {
                 game_loop.world.spawn_ball();
             }
         }
@@ -525,6 +522,24 @@ async fn run_physics_node(
         }
 
         let events = game_loop.tick(dt).await?;
+
+        if id == 0 {
+            let total_balls = game_loop.engine.node.manager.entities.keys().filter(|id| **id < 1_000_000).count();
+            let current_nodes = game_loop.engine.discovery.total_node_count();
+            let desired_nodes = if total_balls >= 15 {
+                4
+            } else if total_balls >= 10 {
+                3
+            } else if total_balls >= 5 {
+                2
+            } else {
+                1
+            };
+            if desired_nodes > current_nodes && desired_nodes > last_split_request {
+                last_split_request = desired_nodes;
+                println!("REQUEST_SPLIT");
+            }
+        }
 
         diag_counter += 1;
         if diag_counter % 256 == 0 {
@@ -682,7 +697,7 @@ mod tests {
                 .ccd_enabled(true)
                 .build();
             let h = world.rigid_body_set.insert(rb);
-            let col = ColliderBuilder::ball(0.8).restitution(0.8).density(1.0).build();
+            let col = ColliderBuilder::ball(0.8).restitution(0.6).friction(0.3).density(8.0).build();
             world.collider_set.insert_with_parent(col, h, &mut world.rigid_body_set);
             world.balls.insert(id, Ball { rigid_body_handle: h });
             world.server_ball_ids.insert(id);
@@ -843,47 +858,21 @@ mod tests {
     }
 
     #[test]
-    fn test_multisplit_thresholds() {
-        let mut world = PhysicsWorld::new();
-        for _ in 0..5 {
-            world.spawn_ball();
+    fn test_split_thresholds_by_ball_count() {
+        fn desired_nodes(total_balls: usize) -> usize {
+            if total_balls >= 15 { 4 }
+            else if total_balls >= 10 { 3 }
+            else if total_balls >= 5 { 2 }
+            else { 1 }
         }
-        world.step();
-        assert_eq!(world.split_count, 0, "5 balls should not trigger split (threshold is >5)");
-
-        world.spawn_ball();
-        world.step();
-        assert_eq!(world.split_count, 1, "6 balls should trigger first split");
-
-        for _ in 0..4 {
-            world.spawn_ball();
-        }
-        world.step();
-        assert_eq!(world.split_count, 1, "10 balls should not trigger second split (threshold is >10)");
-
-        world.spawn_ball();
-        world.step();
-        assert_eq!(world.split_count, 2, "11 balls should trigger second split");
-    }
-
-    #[test]
-    fn test_multisplit_caps_at_3() {
-        let mut world = PhysicsWorld::new();
-        for _ in 0..20 {
-            world.spawn_ball();
-        }
-        for _ in 0..10 {
-            world.step();
-        }
-        assert_eq!(world.split_count, 3, "split_count should cap at 3");
-
-        for _ in 0..10 {
-            world.spawn_ball();
-        }
-        for _ in 0..10 {
-            world.step();
-        }
-        assert_eq!(world.split_count, 3, "split_count should not exceed 3");
+        assert_eq!(desired_nodes(0), 1);
+        assert_eq!(desired_nodes(4), 1);
+        assert_eq!(desired_nodes(5), 2);
+        assert_eq!(desired_nodes(9), 2);
+        assert_eq!(desired_nodes(10), 3);
+        assert_eq!(desired_nodes(14), 3);
+        assert_eq!(desired_nodes(15), 4);
+        assert_eq!(desired_nodes(100), 4);
     }
 
     #[test]
