@@ -8,9 +8,9 @@ pub struct NodeActor {
 }
 
 impl NodeActor {
-    pub fn new(boundary: f32, margin: f32) -> Self {
+    pub fn new(boundary: f32, margin: f32, lower_boundary: f32) -> Self {
         Self {
-            manager: EntityManager::new(boundary, margin),
+            manager: EntityManager::new(boundary, margin, lower_boundary),
             outgoing_messages: VecDeque::new(),
         }
     }
@@ -63,6 +63,7 @@ impl NodeActor {
                         e.vel = (vel.x(), vel.y(), vel.z());
                         self.manager.add_entity(e);
                     } else {
+                        let was_remote = matches!(current_state, Some(AuthorityState::Remote));
                         let entity = Entity {
                             id,
                             pos: (pos.x(), pos.y(), pos.z()),
@@ -71,7 +72,7 @@ impl NodeActor {
                             verifying_key: known_key,
                         };
                         self.manager.add_entity(entity);
-                        if is_new {
+                        if is_new || was_remote {
                             self.outgoing_messages.push_back((id, HandoffType::Ack));
                         }
                     }
@@ -129,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_node_actor_handoff_flow() {
-        let mut node = NodeActor::new(0.0, 5.0);
+        let mut node = NodeActor::new(0.0, 5.0, 0.0);
         let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
         let pos = Vec3::new(100.0, 0.0, 0.0);
         let vel = Vec3::new(0.0, 0.0, 0.0);

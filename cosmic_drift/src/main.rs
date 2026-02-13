@@ -28,7 +28,6 @@ fn main() {
             ..default()
         }))
         .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
-        .add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(visuals::VisualsPlugin)
         .add_plugins(network::NetworkPlugin)
         .add_systems(Startup, (setup_scene, setup_hud))
@@ -84,14 +83,9 @@ fn update_hud(
             "Connecting..."
         };
         let mut pos_str = String::from("Pos: N/A");
-        let mut zone = 0usize;
 
-        let mesh_nodes = server_status.get_node_count().max(1);
+        let mesh_nodes = server_status.get_node_count().max(1) as usize;
         if let Ok(transform) = player_query.get_single() {
-            let map_w = server_status.get_map_width().max(6.0);
-            let zone_width = map_w / mesh_nodes as f32;
-            zone = (transform.translation.x / zone_width).floor() as usize;
-            zone = zone.clamp(0, (mesh_nodes as usize).saturating_sub(1).max(0));
             pos_str = format!(
                 "Pos: {:.1}, {:.1}, {:.1}",
                 transform.translation.x, transform.translation.y, transform.translation.z
@@ -105,20 +99,14 @@ fn update_hud(
             .ok()
             .map(|s| s.len())
             .unwrap_or(0);
-        let connected_port = 5000 + net.current_zone as u16;
-
-        let load_status = if backend_entities > 2000 {
-            "CRITICAL LOAD"
-        } else if backend_entities > 1500 {
-            "HIGH LOAD"
-        } else {
-            "Normal"
-        };
+        let zone_width = 24.0 / mesh_nodes as f32;
+        let next_split = 5 * mesh_nodes;
 
         **text = format!(
-            "Zeus Hypervisor Demo\nStatus: {}\n{}\nZone: {} | Node: 127.0.0.1:{}\nPlayers: {} | Tick: 128Hz\n\n--- BACKEND STATUS ---\nMesh Nodes: {}\nGlobal Cluster Entities: {}\nLoad: {}\n\n[M] +500 server balls  [N] +100 server balls",
-            status, pos_str, zone, connected_port, player_count + 1,
-            mesh_nodes, backend_entities, load_status
+            "Zeus Hypervisor Demo\nStatus: {}\n{}\n\n--- AUTOSCALING ---\nACTIVE NODES: {}\nZone Width: {:.1}\nEntities: {} | Next Split: >{}\n\nPlayers: {} | Tick: 128Hz\n\n[M] +500 balls  [N] +100 balls",
+            status, pos_str,
+            mesh_nodes, zone_width, backend_entities, next_split,
+            player_count + 1
         );
     }
 
@@ -344,21 +332,25 @@ fn render_server_balls(
         .map(|s| s.clone())
         .unwrap_or_default();
 
+    let nc = server_status.get_node_count().max(1) as f32;
+    let zw = 24.0 / nc;
+
     for (&id, &pos) in &target_positions {
         let is_player = remote_player_ids.contains(&id);
         let (r, g, b) = if is_player {
             (1.0, 0.0, 1.0)
         } else {
-            let zone = (pos.x / 6.0).floor() as usize;
-            let zone = zone.clamp(0, 3);
-            ZONE_COLORS[zone]
+            let owner = (pos.x / zw).floor() as usize;
+            let owner = owner.clamp(0, (nc as usize).saturating_sub(1));
+            ZONE_COLORS[owner]
         };
 
         if let Some(&entity) = existing_balls.get(&id) {
             if let Ok((_, mut transform, _, material_handle)) = ball_query.get_mut(entity) {
-                transform.translation = pos;
+                transform.translation = transform.translation.lerp(pos, 0.4);
                 if let Some(material) = materials.get_mut(material_handle) {
                     material.base_color = Color::srgb(r, g, b);
+                    material.emissive = LinearRgba::rgb(r * 1.5, g * 1.5, b * 1.5);
                 }
             }
         } else {
@@ -373,7 +365,7 @@ fn render_server_balls(
                 Mesh3d(meshes.add(Sphere::new(radius).mesh())),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: Color::srgb(r, g, b),
-                    emissive: LinearRgba::rgb(r * 0.5, g * 0.5, b * 0.5),
+                    emissive: LinearRgba::rgb(r * 1.5, g * 1.5, b * 1.5),
                     ..default()
                 })),
                 Transform::from_translation(pos),

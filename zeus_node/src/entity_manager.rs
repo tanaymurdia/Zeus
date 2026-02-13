@@ -22,14 +22,16 @@ pub struct Entity {
 pub struct EntityManager {
     pub entities: HashMap<u64, Entity>,
     boundary: f32,
+    lower_boundary: f32,
     margin: f32,
 }
 
 impl EntityManager {
-    pub fn new(boundary: f32, margin: f32) -> Self {
+    pub fn new(boundary: f32, margin: f32, lower_boundary: f32) -> Self {
         Self {
             entities: HashMap::new(),
             boundary,
+            lower_boundary,
             margin,
         }
     }
@@ -65,6 +67,8 @@ impl EntityManager {
 
                 if entity.pos.0 > self.boundary + self.margin {
                     handoff_candidates.push(entity.id);
+                } else if entity.pos.0 < self.lower_boundary - self.margin {
+                    handoff_candidates.push(entity.id);
                 }
             } else if entity.state == AuthorityState::HandoffOut {
                 entity.pos.0 += entity.vel.0 * dt;
@@ -85,6 +89,18 @@ impl EntityManager {
     pub fn set_boundary(&mut self, boundary: f32) {
         self.boundary = boundary;
     }
+
+    pub fn set_lower_boundary(&mut self, lower_boundary: f32) {
+        self.lower_boundary = lower_boundary;
+    }
+
+    pub fn boundary(&self) -> f32 {
+        self.boundary
+    }
+
+    pub fn lower_boundary(&self) -> f32 {
+        self.lower_boundary
+    }
 }
 
 #[cfg(test)]
@@ -93,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_hysteresis_boundary() {
-        let mut mgr = EntityManager::new(0.0, 5.0);
+        let mut mgr = EntityManager::new(0.0, 5.0, 0.0);
 
         mgr.add_entity(Entity {
             id: 1,
@@ -110,5 +126,64 @@ mod tests {
         let candidates = mgr.update(0.1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0], 1);
+    }
+
+    #[test]
+    fn test_bidirectional_handoff_right() {
+        let mut mgr = EntityManager::new(10.0, 5.0, 0.0);
+        mgr.add_entity(Entity {
+            id: 1,
+            pos: (14.0, 0.0, 0.0),
+            vel: (2.0, 0.0, 0.0),
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+        let candidates = mgr.update(1.0);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0], 1);
+    }
+
+    #[test]
+    fn test_bidirectional_handoff_left() {
+        let mut mgr = EntityManager::new(20.0, 5.0, 8.0);
+        mgr.add_entity(Entity {
+            id: 2,
+            pos: (3.0, 0.0, 0.0),
+            vel: (-1.0, 0.0, 0.0),
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+        let candidates = mgr.update(1.0);
+        assert_eq!(candidates.len(), 1, "Entity below lower_boundary-margin should be a handoff candidate");
+        assert_eq!(candidates[0], 2);
+    }
+
+    #[test]
+    fn test_no_handoff_in_zone() {
+        let mut mgr = EntityManager::new(16.0, 2.0, 8.0);
+        mgr.add_entity(Entity {
+            id: 3,
+            pos: (12.0, 0.0, 0.0),
+            vel: (0.5, 0.0, 0.0),
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+        let candidates = mgr.update(1.0);
+        assert!(candidates.is_empty(), "Entity within zone should not be a handoff candidate");
+    }
+
+    #[test]
+    fn test_getters() {
+        let mgr = EntityManager::new(10.0, 5.0, 3.0);
+        assert_eq!(mgr.boundary(), 10.0);
+        assert_eq!(mgr.lower_boundary(), 3.0);
+    }
+
+    #[test]
+    fn test_set_lower_boundary() {
+        let mut mgr = EntityManager::new(10.0, 5.0, 0.0);
+        assert_eq!(mgr.lower_boundary(), 0.0);
+        mgr.set_lower_boundary(5.0);
+        assert_eq!(mgr.lower_boundary(), 5.0);
     }
 }

@@ -54,7 +54,7 @@ fn create_test_msg(id: u64, type_: HandoffType, x: f32, key: Option<&SigningKey>
 
 #[test]
 fn test_hysteresis_jitter() {
-    let mut mgr = EntityManager::new(0.0, 5.0);
+    let mut mgr = EntityManager::new(0.0, 5.0, 0.0);
     mgr.add_entity(Entity {
         id: 10,
         pos: (4.9, 0.0, 0.0),
@@ -83,7 +83,7 @@ fn test_hysteresis_jitter() {
 
 #[test]
 fn test_state_machine_duplicate_ack() {
-    let mut node = NodeActor::new(0.0, 5.0);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
     node.manager.add_entity(Entity {
         id: 100,
         pos: (6.0, 0.0, 0.0),
@@ -117,7 +117,7 @@ fn test_state_machine_duplicate_ack() {
 
 #[test]
 fn test_state_machine_out_of_order() {
-    let mut node = NodeActor::new(0.0, 5.0);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
 
     node.manager.add_entity(Entity {
         id: 200,
@@ -139,7 +139,7 @@ fn test_state_machine_out_of_order() {
 
 #[test]
 fn test_security_rejects_unsigned_offer() {
-    let mut node = NodeActor::new(0.0, 5.0);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
 
     let (key, check_key) = GhostSerializer::generate_keypair();
     let valid_bytes = create_test_msg(300, HandoffType::Offer, 10.0, Some(&key));
@@ -188,8 +188,8 @@ fn test_2000_entities_triggers_split_warning() {
     use zeus_node::discovery::DiscoveryActor;
 
     let addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-    let mut node = NodeActor::new(0.0, 5.0);
-    let mut discovery = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
+    let mut discovery = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr, 0);
 
     for i in 0..2500 {
         let entity = Entity {
@@ -237,7 +237,7 @@ fn test_load_threshold_boundary() {
     use zeus_node::discovery::DiscoveryActor;
 
     let addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-    let mut discovery = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr);
+    let mut discovery = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr, 0);
 
     discovery.set_load(1999, 50);
     assert_eq!(discovery.local_load.entity_count(), 1999);

@@ -67,6 +67,12 @@ impl<W: GameWorld> GameLoop<W> {
             }
         }
 
+        for (id, remote) in &self.engine.remote_entity_states {
+            if !local_ids.contains(id) && !self.engine.node.manager.entities.contains_key(id) {
+                self.world.on_entity_update(*id, remote.pos, remote.vel);
+            }
+        }
+
         self.world.step(dt);
 
         for id in &local_ids {
@@ -76,6 +82,17 @@ impl<W: GameWorld> GameLoop<W> {
         }
 
         self.engine.broadcast_state_to_clients().await;
+
+        let local_sim_for_peers = self.world.locally_simulated_ids().clone();
+        self.engine.broadcast_state_to_peers(&local_sim_for_peers);
+
+        self.engine.cleanup_remote_states(std::time::Duration::from_millis(300));
+
+        for event in &events {
+            if let ZeusEvent::EntityDeparted { id } = event {
+                self.engine.remove_remote_entity(*id);
+            }
+        }
 
         Ok(events)
     }
@@ -94,6 +111,10 @@ impl<W: GameWorld> GameLoop<W> {
 
     pub fn set_boundary(&mut self, boundary: f32) {
         self.engine.set_boundary(boundary);
+    }
+
+    pub fn set_lower_boundary(&mut self, lower_boundary: f32) {
+        self.engine.set_lower_boundary(lower_boundary);
     }
 }
 
@@ -186,6 +207,8 @@ mod tests {
             seed_addr: None,
             boundary: 100.0,
             margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
         };
         let mock = MockGameWorld::new();
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
@@ -205,6 +228,8 @@ mod tests {
             seed_addr: None,
             boundary: 100.0,
             margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
         };
         let mock = MockGameWorld::new();
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
@@ -237,6 +262,8 @@ mod tests {
             seed_addr: None,
             boundary: 100.0,
             margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
         };
         let mock = MockGameWorld::new();
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
@@ -259,6 +286,8 @@ mod tests {
             seed_addr: None,
             boundary: 100.0,
             margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
         };
         let local_ids: HashSet<u64> = [10].into_iter().collect();
         let mock = MockGameWorld::new()
@@ -310,6 +339,8 @@ mod tests {
             seed_addr: None,
             boundary: 100.0,
             margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
         };
         let local_ids: HashSet<u64> = [10].into_iter().collect();
         let mock = MockGameWorld::new()
@@ -347,6 +378,8 @@ mod tests {
             seed_addr: None,
             boundary: 100.0,
             margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
         };
         let local_ids: HashSet<u64> = [1, 2, 3].into_iter().collect();
         let mock = MockGameWorld::new().with_local_ids(local_ids);

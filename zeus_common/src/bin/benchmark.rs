@@ -100,6 +100,8 @@ fn benchmark_discovery_overhead() {
                 address: Some(addr),
                 position: Some(&pos),
                 load: None,
+                known_node_ids: None,
+                ordinal: 0,
             },
         );
 
@@ -157,6 +159,8 @@ fn benchmark_load_broadcast() {
                 address: Some(addr),
                 position: Some(&pos),
                 load: Some(&load),
+                known_node_ids: None,
+                ordinal: 0,
             },
         );
 

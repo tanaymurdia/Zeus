@@ -13,7 +13,7 @@ async fn test_full_mesh_propagation() {
     let server_addr = server_endpoint.local_addr().unwrap();
 
     let (tx, mut rx) = mpsc::channel(100);
-    let _ = NodeActor::new(0.0, 5.0);
+    let _ = NodeActor::new(0.0, 5.0, 0.0);
 
     let tx_loop = tx.clone();
     tokio::spawn(async move {

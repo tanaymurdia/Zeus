@@ -35,6 +35,8 @@ table DiscoveryAnnounce {
   address: string;
   position: Vec3;
   load: NodeLoad;
+  known_node_ids: [ulong];
+  ordinal: uint;
 }
 
 table DiscoveryFindNode {

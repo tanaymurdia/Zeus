@@ -25,7 +25,7 @@ impl Plugin for NetworkPlugin {
 
 #[derive(Resource, Default)]
 pub struct AccumulatedState {
-    pub positions: Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))>>>,
+    pub positions: Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32), std::time::Instant)>>>,
     pub player_id: Arc<std::sync::Mutex<Option<u64>>>,
     pub player_entity_ids: Arc<std::sync::Mutex<std::collections::HashSet<u64>>>,
 }
@@ -42,16 +42,29 @@ fn generate_snapshots(
     }
     *timer = 0.0;
 
-    let map_lock = accumulated.positions.lock().unwrap();
+    let mut map_lock = accumulated.positions.lock().unwrap();
     if map_lock.is_empty() {
         return;
     }
 
-    let new_positions = map_lock.clone();
+    let now = std::time::Instant::now();
+    let stale_threshold = std::time::Duration::from_millis(300);
+    map_lock.retain(|_, (_, _, last_seen)| now.duration_since(*last_seen) < stale_threshold);
+
+    let new_positions: std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))> = map_lock
+        .iter()
+        .map(|(&id, &(pos, vel, _))| (id, (pos, vel)))
+        .collect();
+
+    drop(map_lock);
+
+    if new_positions.is_empty() {
+        return;
+    }
 
     if let Ok(mut buffer) = ball_pos.snapshots.lock() {
         buffer.push_back(Snapshot {
-            timestamp: std::time::Instant::now(),
+            timestamp: now,
             entities: new_positions,
         });
         while buffer.len() > 60 {
@@ -133,43 +146,10 @@ fn send_player_state(
 }
 
 fn check_roaming(
-    mut net: ResMut<NetworkResource>,
-    query: Query<&Transform, With<crate::PlayerShip>>,
-    server_status: Res<ServerStatus>,
+    _net: ResMut<NetworkResource>,
+    _query: Query<&Transform, With<crate::PlayerShip>>,
+    _server_status: Res<ServerStatus>,
 ) {
-    if net.client.is_none() {
-        return;
-    }
-
-    let active_nodes = server_status.get_node_count().max(1) as usize;
-    if active_nodes <= 1 {
-        return;
-    }
-
-    if let Ok(transform) = query.get_single() {
-        let x = transform.translation.x;
-        let map_w = server_status.get_map_width().max(6.0);
-        let zone_width = map_w / active_nodes as f32;
-        let zone = (x / zone_width).floor() as usize;
-        let zone = zone.clamp(0, active_nodes - 1);
-
-        if zone != net.current_zone {
-            net.current_zone = zone;
-
-            let port = 5000 + zone as u16;
-            let addr_str = format!("127.0.0.1:{}", port);
-
-            if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
-                let client_lock = net.client.as_ref().unwrap().clone();
-                let rt_handle = net.runtime.handle().clone();
-
-                rt_handle.spawn(async move {
-                    let mut client = client_lock.lock().await;
-                    let _ = client.connect(addr).await;
-                });
-            }
-        }
-    }
 }
 
 #[derive(Resource)]
@@ -272,6 +252,7 @@ fn setup_network(
                             {
                                 if let Some(ghosts) = update.ghosts() {
                                     if let Ok(mut map) = accumulated_positions.lock() {
+                                        let now = std::time::Instant::now();
                                         for ghost in ghosts {
                                             let id = ghost.entity_id();
                                             let pos = ghost
@@ -282,7 +263,7 @@ fn setup_network(
                                                 .velocity()
                                                 .map(|v| (v.x(), v.y(), v.z()))
                                                 .unwrap_or((0.0, 0.0, 0.0));
-                                            map.insert(id, (pos, vel));
+                                            map.insert(id, (pos, vel, now));
                                         }
                                     }
                                 }
@@ -323,6 +304,7 @@ pub fn encode_0xdd(count: u16) -> Vec<u8> {
     vec![0xDD, (count >> 8) as u8, (count & 0xFF) as u8]
 }
 
+#[allow(dead_code)]
 pub fn decode_0xdd(data: &[u8]) -> u16 {
     if data.len() < 3 || data[0] != 0xDD {
         return 0;
@@ -330,6 +312,7 @@ pub fn decode_0xdd(data: &[u8]) -> u16 {
     ((data[1] as u16) << 8) | (data[2] as u16)
 }
 
+#[allow(dead_code)]
 pub fn encode_0xbb(player_ids: &[u64]) -> Vec<u8> {
     let count = player_ids.len() as u16;
     let mut buf = Vec::with_capacity(3 + player_ids.len() * 8);
@@ -342,6 +325,7 @@ pub fn encode_0xbb(player_ids: &[u64]) -> Vec<u8> {
     buf
 }
 
+#[allow(dead_code)]
 pub fn decode_0xbb(data: &[u8]) -> Vec<u64> {
     if data.len() < 3 || data[0] != 0xBB {
         return Vec::new();

@@ -95,8 +95,8 @@ async fn run_mesh(
         tx.send(NetworkEvent::NewConnection(connection)).await?;
     }
 
-    let mut node = NodeActor::new(0.0, 5.0);
-    let mut discovery = DiscoveryActor::new(rand::random(), (0.0, 0.0, 0.0), bind);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
+    let mut discovery = DiscoveryActor::new(rand::random(), (0.0, 0.0, 0.0), bind, 0);
 
     let mut connections: Vec<quinn::Connection> = Vec::new();
 
@@ -204,7 +204,7 @@ async fn run_source(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> 
     fs::write("server.cert", &cert).await?;
     println!("Source Node listening on {}", endpoint.local_addr()?);
 
-    let mut node = NodeActor::new(0.0, 5.0);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
     node.manager.add_entity(Entity {
         id: 1,
         pos: (-10.0, 0.0, 0.0),
@@ -272,7 +272,7 @@ async fn run_target(bind: SocketAddr, peer: SocketAddr) -> Result<(), Box<dyn st
     let connection = endpoint.connect(peer, "localhost")?.await?;
     println!("Connected to Source");
 
-    let mut node = NodeActor::new(0.0, 5.0);
+    let mut node = NodeActor::new(0.0, 5.0, 0.0);
 
     let dt = 0.050;
     loop {

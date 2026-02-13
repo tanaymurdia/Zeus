@@ -61,7 +61,7 @@ struct PhysicsWorld {
     balls: HashMap<u64, Ball>,
     server_ball_ids: HashSet<u64>,
     next_ball_id: u64,
-    split_requested: bool,
+    split_count: u32,
 }
 
 impl PhysicsWorld {
@@ -89,7 +89,7 @@ impl PhysicsWorld {
         let h_front = rigid_body_set.insert(wall_front);
         let h_back = rigid_body_set.insert(wall_back);
 
-        let wall_col = ColliderBuilder::cuboid(500.0, 10.0, 1.0).build();
+        let wall_col = ColliderBuilder::cuboid(500.0, 10.0, 2.0).build();
         collider_set.insert_with_parent(wall_col.clone(), h_front, &mut rigid_body_set);
         collider_set.insert_with_parent(wall_col, h_back, &mut rigid_body_set);
 
@@ -105,14 +105,18 @@ impl PhysicsWorld {
         let h_left = rigid_body_set.insert(wall_left);
         let h_right = rigid_body_set.insert(wall_right);
 
-        let wall_side_col = ColliderBuilder::cuboid(500.0, 10.0, 1.0).build();
+        let wall_side_col = ColliderBuilder::cuboid(500.0, 10.0, 2.0).build();
         collider_set.insert_with_parent(wall_side_col.clone(), h_left, &mut rigid_body_set);
         collider_set.insert_with_parent(wall_side_col, h_right, &mut rigid_body_set);
 
         Self {
             rigid_body_set,
             collider_set,
-            integration_parameters: IntegrationParameters::default(),
+            integration_parameters: {
+                let mut p = IntegrationParameters::default();
+                p.dt = 1.0 / 128.0;
+                p
+            },
             physics_pipeline: PhysicsPipeline::new(),
             island_manager: IslandManager::new(),
             broad_phase: DefaultBroadPhase::new(),
@@ -124,7 +128,7 @@ impl PhysicsWorld {
             balls: HashMap::new(),
             server_ball_ids: HashSet::new(),
             next_ball_id: 1,
-            split_requested: false,
+            split_count: 0,
         }
     }
 
@@ -141,6 +145,7 @@ impl PhysicsWorld {
             .linvel(vector![5.0, 0.0, 0.0])
             .linear_damping(0.0)
             .angular_damping(0.0)
+            .ccd_enabled(true)
             .build();
         let handle = self.rigid_body_set.insert(rigid_body);
 
@@ -163,14 +168,23 @@ impl PhysicsWorld {
     }
 
     fn spawn_ball_at(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
-        if self.balls.contains_key(&id) {
-            return;
+        if let Some(ball) = self.balls.get(&id) {
+            if let Some(rb) = self.rigid_body_set.get(ball.rigid_body_handle) {
+                if rb.is_kinematic() {
+                    self.remove_ball(id);
+                } else {
+                    return;
+                }
+            } else {
+                return;
+            }
         }
         let rigid_body = RigidBodyBuilder::dynamic()
             .translation(vector![pos.0, pos.1, pos.2])
             .linvel(vector![vel.0, vel.1, vel.2])
             .linear_damping(0.0)
             .angular_damping(0.0)
+            .ccd_enabled(true)
             .build();
         let handle = self.rigid_body_set.insert(rigid_body);
         let collider = ColliderBuilder::ball(0.8)
@@ -212,13 +226,15 @@ impl PhysicsWorld {
         );
     }
 
-    fn update_ball(&mut self, id: u64, pos: (f32, f32, f32), _vel: (f32, f32, f32)) {
+    fn update_ball(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
         if let Some(ball) = self.balls.get(&id) {
             if let Some(rb) = self.rigid_body_set.get_mut(ball.rigid_body_handle) {
-                rb.set_next_kinematic_position(rapier3d::prelude::Isometry::translation(
-                    pos.0, pos.1, pos.2,
-                ));
-                rb.set_linvel(rapier3d::na::vector![_vel.0, _vel.1, _vel.2], true);
+                if rb.is_kinematic() {
+                    rb.set_next_kinematic_position(rapier3d::prelude::Isometry::translation(
+                        pos.0, pos.1, pos.2,
+                    ));
+                    rb.set_linvel(rapier3d::na::vector![vel.0, vel.1, vel.2], true);
+                }
             }
         }
     }
@@ -245,8 +261,9 @@ impl PhysicsWorld {
             }
         }
 
-        if self.balls.len() > 10 && !self.split_requested {
-            self.split_requested = true;
+        let threshold = 5 * (self.split_count as usize + 1);
+        if self.balls.len() > threshold && self.split_count < 3 {
+            self.split_count += 1;
             println!("REQUEST_SPLIT");
         }
 
@@ -265,6 +282,31 @@ impl PhysicsWorld {
             &(),
             &(),
         );
+
+        for ball in self.balls.values() {
+            if let Some(rb) = self.rigid_body_set.get_mut(ball.rigid_body_handle) {
+                if !rb.is_dynamic() {
+                    continue;
+                }
+                let pos = *rb.translation();
+                let vel = *rb.linvel();
+                let max_speed = 30.0;
+                let clamped_vel = if vel.norm() > max_speed {
+                    vel.normalize() * max_speed
+                } else {
+                    vel
+                };
+                if pos.x < -1.0 || pos.x > 25.0 || pos.y < -5.0 || pos.y > 20.0 || pos.z < -14.0 || pos.z > 14.0 {
+                    let cx = pos.x.clamp(1.0, 23.0);
+                    let cy = 1.0;
+                    let cz = pos.z.clamp(-10.0, 10.0);
+                    rb.set_translation(vector![cx, cy, cz], true);
+                    rb.set_linvel(vector![0.0, 0.0, 0.0], true);
+                } else if clamped_vel != vel {
+                    rb.set_linvel(clamped_vel, true);
+                }
+            }
+        }
     }
 
     fn get_ball_state(&self, id: u64) -> Option<((f32, f32, f32), (f32, f32, f32))> {
@@ -409,7 +451,7 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
                 if next_id < 4 {
                     println!("[Orchestrator] ⚠️ SPLIT REQUEST RECEIVED! Spawning Node {}...", next_id);
                     let port = start_port + next_id as u16;
-                    let boundary = 6.0 * (next_id as f32 + 1.0);
+                    let boundary = 24.0;
                     let peer = port - 1;
 
                     let mut cmd = spawn_node(next_id, port, boundary, Some(peer));
@@ -445,7 +487,9 @@ async fn run_physics_node(
         bind_addr: bind,
         seed_addr: peer,
         boundary,
-        margin: 5.0,
+        margin: 1.0,
+        ordinal: id as u32,
+        lower_boundary: 0.0,
     };
 
     let physics = PhysicsWorld::new();
@@ -466,13 +510,18 @@ async fn run_physics_node(
             }
         }
 
-        if id == 0 {
-            let has_peers = !game_loop.engine.discovery.peers.is_empty();
-            if game_loop.world.split_requested && has_peers {
-                game_loop.set_boundary(6.0);
-            } else {
-                game_loop.set_boundary(24.0);
-            }
+        let total_nodes = game_loop.engine.discovery.total_node_count().max(1) as f32;
+        let should_recompute = if id == 0 {
+            true
+        } else {
+            total_nodes > 1.0
+        };
+        if should_recompute {
+            let zone_width = 24.0 / total_nodes;
+            let lower = id as f32 * zone_width;
+            let upper = (id as f32 + 1.0) * zone_width;
+            game_loop.set_lower_boundary(lower);
+            game_loop.set_boundary(upper);
         }
 
         let events = game_loop.tick(dt).await?;
@@ -485,10 +534,13 @@ async fn run_physics_node(
             let remote_count = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Remote).count();
             let physics_balls = game_loop.world.ball_count();
             let conns = game_loop.engine.connections.len();
+            let boundary = game_loop.engine.node.manager.boundary();
+            let lower_b = game_loop.engine.node.manager.lower_boundary();
+            let tn = game_loop.engine.discovery.total_node_count();
             eprintln!(
-                "[Node {}] entities: {} (L:{} H:{} R:{}) physics:{} conns:{} events:{}",
+                "[Node {}] entities: {} (L:{} H:{} R:{}) physics:{} conns:{} events:{} zone=[{:.1},{:.1}] nodes={}",
                 id, em.entities.len(), local_count, handoff_count, remote_count,
-                physics_balls, conns, events.len()
+                physics_balls, conns, events.len(), lower_b, boundary, tn
             );
             for e in em.entities.values().take(3) {
                 let in_physics = game_loop.world.get_entity_state(e.id).is_some();
@@ -511,8 +563,7 @@ async fn run_physics_node(
         }
 
         let entity_count = game_loop.engine.node.manager.entities.len() as u16;
-        let peer_node_count = game_loop.engine.discovery.peers.len() as u8;
-        let active_nodes = (peer_node_count + 1).max(1);
+        let active_nodes = game_loop.engine.discovery.total_node_count().max(1) as u8;
         let status_bytes: [u8; 6] = [
             0xAA,
             (entity_count >> 8) as u8,
@@ -578,18 +629,18 @@ mod tests {
     }
 
     #[test]
-    fn test_physics_world_entity_update() {
+    fn test_physics_world_entity_update_kinematic() {
         let mut world = PhysicsWorld::new();
-        world.on_entity_arrived(42, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
-        world.on_entity_update(42, (10.0, 20.0, 30.0), (1.0, 2.0, 3.0));
+        world.on_entity_arrived(2_000_000, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+        world.on_entity_update(2_000_000, (10.0, 5.0, 3.0), (1.0, 2.0, 3.0));
         world.step();
-        let state = world.get_entity_state(42).unwrap();
+        let state = world.get_entity_state(2_000_000).unwrap();
         assert!((state.0 .0 - 10.0).abs() < 0.5);
-        assert!((state.0 .1 - 20.0).abs() < 0.5);
-        world.on_entity_update(42, (99.0, 88.0, 77.0), (0.0, 0.0, 0.0));
+        assert!((state.0 .1 - 5.0).abs() < 0.5);
+        world.on_entity_update(2_000_000, (15.0, 5.0, 3.0), (0.0, 0.0, 0.0));
         world.step();
-        let state2 = world.get_entity_state(42).unwrap();
-        assert!((state2.0 .0 - 99.0).abs() < 0.5);
+        let state2 = world.get_entity_state(2_000_000).unwrap();
+        assert!((state2.0 .0 - 15.0).abs() < 0.5);
     }
 
     #[test]
@@ -605,6 +656,128 @@ mod tests {
     }
 
     #[test]
+    fn test_physics_dt_matches_tick_rate() {
+        let world = PhysicsWorld::new();
+        let expected = 1.0 / 128.0_f32;
+        assert!(
+            (world.integration_parameters.dt - expected).abs() < 1e-6,
+            "dt should be 1/128, got {}",
+            world.integration_parameters.dt
+        );
+    }
+
+    #[test]
+    fn test_balls_stay_inside_walls() {
+        let mut world = PhysicsWorld::new();
+        for i in 0..20 {
+            let id = world.next_ball_id;
+            world.next_ball_id += 1;
+            let x = (i % 10 + 2) as f32;
+            let z = ((i as f32 / 20.0) * 16.0) - 8.0;
+            let vx = if i % 2 == 0 { 15.0 } else { -15.0 };
+            let vz = if i % 3 == 0 { 10.0 } else { -10.0 };
+            let rb = RigidBodyBuilder::dynamic()
+                .translation(vector![x, 3.0, z])
+                .linvel(vector![vx, 0.0, vz])
+                .ccd_enabled(true)
+                .build();
+            let h = world.rigid_body_set.insert(rb);
+            let col = ColliderBuilder::ball(0.8).restitution(0.8).density(1.0).build();
+            world.collider_set.insert_with_parent(col, h, &mut world.rigid_body_set);
+            world.balls.insert(id, Ball { rigid_body_handle: h });
+            world.server_ball_ids.insert(id);
+        }
+        for _ in 0..1000 {
+            world.step();
+        }
+        for ball in world.balls.values() {
+            if let Some(rb) = world.rigid_body_set.get(ball.rigid_body_handle) {
+                let pos = rb.translation();
+                assert!(pos.x > -5.0 && pos.x < 30.0, "Ball escaped x: {}", pos.x);
+                assert!(pos.z > -16.0 && pos.z < 16.0, "Ball escaped z: {}", pos.z);
+                assert!(pos.y > -3.0, "Ball fell through ground: y={}", pos.y);
+            }
+        }
+    }
+
+    #[test]
+    fn test_dynamic_body_not_teleported() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_ball();
+        let orig = world.get_ball_state(1).unwrap().0;
+        world.update_ball(1, (100.0, 100.0, 100.0), (0.0, 0.0, 0.0));
+        let after = world.get_ball_state(1).unwrap().0;
+        assert!(
+            (after.0 - orig.0).abs() < 1.0,
+            "Dynamic body should NOT be teleported, was at {:.1} now {:.1}",
+            orig.0,
+            after.0
+        );
+    }
+
+    #[test]
+    fn test_cross_node_collision_via_proxy() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_ball_at(1, (5.0, 1.0, 0.0), (10.0, 0.0, 0.0));
+
+        world.on_entity_update(2_000_000, (8.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+
+        let orig_vel = world.get_ball_state(1).unwrap().1;
+
+        for _ in 0..50 {
+            world.on_entity_update(2_000_000, (8.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+            world.step();
+        }
+
+        let (pos, vel) = world.get_ball_state(1).unwrap();
+        let deflected = (vel.0 - orig_vel.0).abs() > 0.1
+            || pos.0 < 7.0;
+        assert!(
+            deflected,
+            "Dynamic ball should be deflected by kinematic proxy. pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})",
+            pos.0, pos.1, pos.2, vel.0, vel.1, vel.2
+        );
+    }
+
+    #[test]
+    fn test_kinematic_proxy_does_not_move_on_collision() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_ball_at(1, (5.0, 1.0, 0.0), (10.0, 0.0, 0.0));
+        world.on_entity_update(2_000_000, (8.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+
+        for _ in 0..50 {
+            world.on_entity_update(2_000_000, (8.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+            world.step();
+        }
+
+        let (proxy_pos, _) = world.get_ball_state(2_000_000).unwrap();
+        assert!(
+            (proxy_pos.0 - 8.0).abs() < 0.5,
+            "Kinematic proxy should stay near (8,1,0), got ({:.2},{:.2},{:.2})",
+            proxy_pos.0, proxy_pos.1, proxy_pos.2
+        );
+    }
+
+    #[test]
+    fn test_proxy_created_and_updated() {
+        let mut world = PhysicsWorld::new();
+        assert!(world.get_ball_state(3_000_000).is_none());
+
+        world.on_entity_update(3_000_000, (5.0, 3.0, 2.0), (1.0, 0.0, 0.0));
+        world.step();
+
+        let state = world.get_ball_state(3_000_000);
+        assert!(state.is_some(), "Proxy should exist after on_entity_update");
+        let (pos, _) = state.unwrap();
+        assert!((pos.0 - 5.0).abs() < 1.0, "Proxy x should be near 5.0, got {}", pos.0);
+
+        world.on_entity_update(3_000_000, (15.0, 3.0, 2.0), (0.0, 0.0, 0.0));
+        world.step();
+        let (pos2, _) = world.get_ball_state(3_000_000).unwrap();
+        assert!((pos2.0 - 15.0).abs() < 1.0, "Proxy x should move to 15.0 after update, got {}", pos2.0);
+    }
+
+    #[test]
     fn test_physics_world_entity_departed() {
         let mut world = PhysicsWorld::new();
         world.on_entity_arrived(55, (1.0, 2.0, 3.0), (0.0, 0.0, 0.0));
@@ -612,5 +785,140 @@ mod tests {
         world.on_entity_departed(55);
         assert!(!world.balls.contains_key(&55));
         assert!(world.get_entity_state(55).is_none());
+    }
+
+    #[test]
+    fn test_kinematic_to_dynamic_on_arrival() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_remote_ball(42, (10.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+        assert!(world.balls.contains_key(&42));
+        assert!(!world.server_ball_ids.contains(&42));
+        let rb = world.rigid_body_set.get(world.balls[&42].rigid_body_handle).unwrap();
+        assert!(rb.is_kinematic(), "Should start as kinematic proxy");
+
+        world.on_entity_arrived(42, (10.0, 1.0, 0.0), (1.0, 0.0, 0.0));
+        assert!(world.balls.contains_key(&42));
+        assert!(world.server_ball_ids.contains(&42));
+        let rb = world.rigid_body_set.get(world.balls[&42].rigid_body_handle).unwrap();
+        assert!(rb.is_dynamic(), "Ball should be dynamic after handoff arrival");
+    }
+
+    #[test]
+    fn test_dynamic_stays_dynamic_on_double_arrival() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_ball_at(10, (5.0, 1.0, 0.0), (1.0, 0.0, 0.0));
+        let orig_handle = world.balls[&10].rigid_body_handle;
+        let orig_pos = world.get_ball_state(10).unwrap().0;
+
+        world.on_entity_arrived(10, (5.0, 1.0, 0.0), (1.0, 0.0, 0.0));
+        let rb = world.rigid_body_set.get(world.balls[&10].rigid_body_handle).unwrap();
+        assert!(rb.is_dynamic(), "Should remain dynamic");
+        assert_eq!(world.balls[&10].rigid_body_handle, orig_handle, "Handle should not change");
+        let pos = world.get_ball_state(10).unwrap().0;
+        assert!((pos.0 - orig_pos.0).abs() < 0.01, "Position should be unchanged");
+    }
+
+    #[test]
+    fn test_collision_works_after_kinematic_to_dynamic_conversion() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_remote_ball(42, (10.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+        world.on_entity_arrived(42, (10.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+        let rb = world.rigid_body_set.get(world.balls[&42].rigid_body_handle).unwrap();
+        assert!(rb.is_dynamic(), "Ball 42 should be dynamic after conversion");
+
+        world.spawn_ball_at(43, (5.0, 1.0, 0.0), (10.0, 0.0, 0.0));
+        let orig_vel = world.get_ball_state(43).unwrap().1;
+
+        for _ in 0..50 {
+            world.step();
+        }
+
+        let (pos, vel) = world.get_ball_state(43).unwrap();
+        let deflected = (vel.0 - orig_vel.0).abs() > 0.1 || pos.0 < 9.0;
+        assert!(
+            deflected,
+            "Ball 43 should collide with converted-dynamic ball 42. pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})",
+            pos.0, pos.1, pos.2, vel.0, vel.1, vel.2
+        );
+    }
+
+    #[test]
+    fn test_multisplit_thresholds() {
+        let mut world = PhysicsWorld::new();
+        for _ in 0..5 {
+            world.spawn_ball();
+        }
+        world.step();
+        assert_eq!(world.split_count, 0, "5 balls should not trigger split (threshold is >5)");
+
+        world.spawn_ball();
+        world.step();
+        assert_eq!(world.split_count, 1, "6 balls should trigger first split");
+
+        for _ in 0..4 {
+            world.spawn_ball();
+        }
+        world.step();
+        assert_eq!(world.split_count, 1, "10 balls should not trigger second split (threshold is >10)");
+
+        world.spawn_ball();
+        world.step();
+        assert_eq!(world.split_count, 2, "11 balls should trigger second split");
+    }
+
+    #[test]
+    fn test_multisplit_caps_at_3() {
+        let mut world = PhysicsWorld::new();
+        for _ in 0..20 {
+            world.spawn_ball();
+        }
+        for _ in 0..10 {
+            world.step();
+        }
+        assert_eq!(world.split_count, 3, "split_count should cap at 3");
+
+        for _ in 0..10 {
+            world.spawn_ball();
+        }
+        for _ in 0..10 {
+            world.step();
+        }
+        assert_eq!(world.split_count, 3, "split_count should not exceed 3");
+    }
+
+    #[test]
+    fn test_position_stable_across_conversion() {
+        let mut world = PhysicsWorld::new();
+        world.spawn_remote_ball(42, (10.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+        world.step();
+
+        world.on_entity_arrived(42, (10.0, 1.0, 0.0), (0.0, 0.0, 0.0));
+        world.step();
+        let (pos, _) = world.get_ball_state(42).unwrap();
+        assert!(
+            (pos.0 - 10.0).abs() < 1.5,
+            "Position should be stable after conversion, got x={:.2}",
+            pos.0
+        );
+        assert!(
+            (pos.1 - 1.0).abs() < 1.5,
+            "Position y should be stable after conversion, got y={:.2}",
+            pos.1
+        );
+    }
+
+    #[test]
+    fn test_departed_entity_cleaned_from_all_tracking() {
+        let mut world = PhysicsWorld::new();
+        let id = world.spawn_ball().unwrap();
+        assert!(world.balls.contains_key(&id));
+        assert!(world.server_ball_ids.contains(&id));
+        let handle = world.balls[&id].rigid_body_handle;
+        assert!(world.rigid_body_set.get(handle).is_some());
+
+        world.on_entity_departed(id);
+        assert!(!world.balls.contains_key(&id));
+        assert!(!world.server_ball_ids.contains(&id));
+        assert!(world.rigid_body_set.get(handle).is_none());
     }
 }
