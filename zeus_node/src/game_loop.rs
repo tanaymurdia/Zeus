@@ -98,13 +98,12 @@ impl<W: GameWorld> GameLoop<W> {
     }
 
     pub fn player_entity_ids(&self) -> Vec<u64> {
-        let local_ids = self.world.locally_simulated_ids();
         self.engine
             .node
             .manager
             .entities
             .keys()
-            .filter(|id| !local_ids.contains(id))
+            .filter(|id| **id >= 1_000_000)
             .copied()
             .collect()
     }

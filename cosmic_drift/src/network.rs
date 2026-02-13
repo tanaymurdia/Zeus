@@ -158,7 +158,7 @@ pub struct NetworkResource {
     pub runtime: Runtime,
 
     pub accumulated:
-        Option<Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))>>>>,
+        Option<Arc<std::sync::Mutex<std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32), std::time::Instant)>>>>,
     pub current_zone: usize,
 }
 

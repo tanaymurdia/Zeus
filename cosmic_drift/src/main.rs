@@ -347,7 +347,7 @@ fn render_server_balls(
 
         if let Some(&entity) = existing_balls.get(&id) {
             if let Ok((_, mut transform, _, material_handle)) = ball_query.get_mut(entity) {
-                transform.translation = transform.translation.lerp(pos, 0.4);
+                transform.translation = transform.translation.lerp(pos, 0.15);
                 if let Some(material) = materials.get_mut(material_handle) {
                     material.base_color = Color::srgb(r, g, b);
                     material.emissive = LinearRgba::rgb(r * 1.5, g * 1.5, b * 1.5);
