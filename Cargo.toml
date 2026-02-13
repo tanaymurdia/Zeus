@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "zeus_common",
-    "zeus_node",
-    "zeus_transport",
-    "zeus_client",
-    "zeus_client_ffi",
-    "cosmic_drift",
-    "cosmic_drift_server",
+    "src/zeus_common",
+    "src/zeus_transport",
+    "src/zeus_node",
+    "src/zeus_client",
+    "src/zeus_client_ffi",
+    "examples/cosmic_drift",
+    "examples/cosmic_drift_server",
 ]
 resolver = "2"
 
