@@ -1,3 +1,4 @@
+use crate::cell::Cell;
 use crate::entity_manager::{AuthorityState, Entity, EntityManager};
 use std::collections::VecDeque;
 use zeus_common::{HandoffMsg, HandoffType};
@@ -15,13 +16,15 @@ impl NodeActor {
         }
     }
 
-    pub fn update(&mut self, dt: f32) {
-        let candidates = self.manager.update(dt);
-
-        for id in candidates {
-            self.manager.set_state(id, AuthorityState::HandoffOut);
-            self.outgoing_messages.push_back((id, HandoffType::Offer));
+    pub fn new_3d(cell: Cell, margin: f32) -> Self {
+        Self {
+            manager: EntityManager::new_3d(cell, margin),
+            outgoing_messages: VecDeque::new(),
         }
+    }
+
+    pub fn update(&mut self, dt: f32) -> Vec<(u64, crate::cell::Face)> {
+        self.manager.update(dt)
     }
 
     pub fn set_boundary(&mut self, boundary: f32) {
@@ -57,16 +60,23 @@ impl NodeActor {
                     let pos = ghost.position().unwrap();
                     let vel = ghost.velocity().unwrap();
 
+                    let entity_pos = (pos.x(), pos.y(), pos.z());
+
                     if is_local {
                         let mut e = self.manager.get_entity(id).unwrap().clone();
-                        e.pos = (pos.x(), pos.y(), pos.z());
+                        e.pos = entity_pos;
                         e.vel = (vel.x(), vel.y(), vel.z());
                         self.manager.add_entity(e);
                     } else {
+                        let cell = self.manager.cell();
+                        let is_3d = cell.y_min.is_finite();
+                        if is_3d && !cell.contains(entity_pos) {
+                            return;
+                        }
                         let was_remote = matches!(current_state, Some(AuthorityState::Remote));
                         let entity = Entity {
                             id,
-                            pos: (pos.x(), pos.y(), pos.z()),
+                            pos: entity_pos,
                             vel: (vel.x(), vel.y(), vel.z()),
                             state: AuthorityState::Local,
                             verifying_key: known_key,

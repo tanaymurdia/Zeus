@@ -67,7 +67,7 @@ fn test_hysteresis_jitter() {
     assert!(candidates.is_empty(), "Should not trigger at exactly 5.0");
 
     let candidates = mgr.update(1.0);
-    assert!(candidates.contains(&10), "Should trigger above 5.0");
+    assert!(candidates.iter().any(|(id, _)| *id == 10), "Should trigger above 5.0");
 
     mgr.set_state(10, AuthorityState::Local);
     let e = mgr.get_entity_mut(10).unwrap();

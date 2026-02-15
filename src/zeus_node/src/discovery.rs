@@ -13,6 +13,7 @@ pub struct Peer {
     pub load: Option<NodeLoad>,
     pub last_seen: Instant,
     pub ordinal: u32,
+    pub cell: Option<crate::cell::Cell>,
 }
 
 pub struct DiscoveryActor {
@@ -100,6 +101,7 @@ impl DiscoveryActor {
                 }
                 self.known_node_ids.insert(id);
 
+                let existing_cell = self.peers.get(&id).and_then(|p| p.cell.clone());
                 self.peers.insert(
                     id,
                     Peer {
@@ -109,10 +111,50 @@ impl DiscoveryActor {
                         load: load.copied(),
                         last_seen: Instant::now(),
                         ordinal,
+                        cell: existing_cell,
                     },
                 );
             }
             None => {}
+        }
+    }
+
+    pub fn find_peer_for_cell(&self, cell: &crate::cell::Cell) -> Option<&Peer> {
+        self.peers.values().find(|p| {
+            p.cell.as_ref().is_some_and(|c| c == cell)
+        })
+    }
+
+    pub fn find_peer_containing(&self, pos: (f32, f32, f32)) -> Option<&Peer> {
+        self.peers.values().find(|p| {
+            p.cell.as_ref().is_some_and(|c| c.contains(pos))
+        })
+    }
+
+    pub fn prune_node(&mut self, node_id: u64) {
+        self.peers.remove(&node_id);
+        self.known_node_ids.remove(&node_id);
+    }
+
+    pub fn prune_nodes(&mut self, active_ids: &std::collections::HashSet<u64>) {
+        self.peers.retain(|id, _| active_ids.contains(id));
+        self.known_node_ids.retain(|id| *id == self.local_id || active_ids.contains(id));
+    }
+
+    pub fn peer_ids(&self) -> std::collections::HashSet<u64> {
+        self.peers.keys().copied().collect()
+    }
+
+    pub fn peer_cells(&self) -> std::collections::HashMap<u64, crate::cell::Cell> {
+        self.peers
+            .iter()
+            .filter_map(|(id, p)| p.cell.as_ref().map(|c| (*id, c.clone())))
+            .collect()
+    }
+
+    pub fn update_peer_cell(&mut self, node_id: u64, cell: crate::cell::Cell) {
+        if let Some(peer) = self.peers.get_mut(&node_id) {
+            peer.cell = Some(cell);
         }
     }
 
@@ -211,6 +253,7 @@ mod tests {
                 load: None,
                 last_seen: Instant::now() - Duration::from_secs(11),
                 ordinal: 0,
+                cell: None,
             },
         );
         actor.peers.insert(
@@ -222,6 +265,7 @@ mod tests {
                 load: None,
                 last_seen: Instant::now(),
                 ordinal: 0,
+                cell: None,
             },
         );
 

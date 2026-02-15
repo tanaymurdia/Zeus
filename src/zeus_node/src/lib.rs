@@ -1,8 +1,11 @@
+pub mod autoscaler;
+pub mod cell;
 pub mod discovery;
 pub mod engine;
 pub mod entity_manager;
 pub mod game_loop;
 pub mod node_actor;
+pub mod octree;
 
 use zeus_common::HandoffMsg;
 

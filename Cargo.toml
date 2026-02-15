@@ -3,10 +3,13 @@ members = [
     "src/zeus_common",
     "src/zeus_transport",
     "src/zeus_node",
+    "src/zeus_orchestrator",
     "src/zeus_client",
     "src/zeus_client_ffi",
     "examples/cosmic_drift",
     "examples/cosmic_drift_server",
+    "examples/swarm_arena",
+    "examples/swarm_arena_server",
 ]
 resolver = "2"
 

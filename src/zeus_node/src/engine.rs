@@ -1,4 +1,5 @@
 use crate::NetworkEvent;
+use crate::cell::Cell;
 use crate::discovery::DiscoveryActor;
 use crate::entity_manager::{AuthorityState, Entity};
 use crate::node_actor::NodeActor;
@@ -24,6 +25,7 @@ pub struct ZeusConfig {
     pub margin: f32,
     pub ordinal: u32,
     pub lower_boundary: f32,
+    pub cell: Option<Cell>,
 }
 
 #[derive(Debug)]
@@ -63,6 +65,7 @@ pub struct ZeusEngine {
     pub peer_verifying_keys: HashMap<u64, VerifyingKey>,
     heartbeat_counter: u32,
     tick_counter: u32,
+    handoff_retry_counter: u32,
 }
 
 impl ZeusEngine {
@@ -104,7 +107,11 @@ impl ZeusEngine {
         let local_id = rand::random();
 
         let (signing_key, verifying_key) = zeus_common::GhostSerializer::generate_keypair();
-        let node = NodeActor::new(config.boundary, config.margin, config.lower_boundary);
+        let node = if let Some(ref cell) = config.cell {
+            NodeActor::new_3d(cell.clone(), config.margin)
+        } else {
+            NodeActor::new(config.boundary, config.margin, config.lower_boundary)
+        };
         let discovery = DiscoveryActor::new(local_id, (0.0, 0.0, 0.0), config.bind_addr, config.ordinal);
 
         let mut known_peer_addrs = std::collections::HashSet::new();
@@ -131,6 +138,7 @@ impl ZeusEngine {
             peer_verifying_keys: HashMap::new(),
             heartbeat_counter: 0,
             tick_counter: 0,
+            handoff_retry_counter: 0,
         })
     }
 
@@ -159,8 +167,28 @@ impl ZeusEngine {
         self.node.manager.set_lower_boundary(lower_boundary);
     }
 
+    pub fn set_cell(&mut self, cell: Cell) {
+        self.node.manager.set_cell(cell);
+    }
+
+    pub fn find_target_connection_pub(&self, entity_id: u64) -> Option<&quinn::Connection> {
+        self.find_target_connection(entity_id)
+    }
+
     fn find_target_connection(&self, entity_id: u64) -> Option<&quinn::Connection> {
         let entity = self.node.manager.get_entity(entity_id)?;
+
+        if let Some(peer) = self.discovery.find_peer_containing(entity.pos) {
+            return self.peer_connections
+                .iter()
+                .find(|c| c.remote_address() == peer.addr)
+                .or_else(|| {
+                    self.connections
+                        .iter()
+                        .find(|c| c.remote_address() == peer.addr)
+                });
+        }
+
         let my_ordinal = self.discovery.local_ordinal;
         let boundary = self.node.manager.boundary();
         let lower = self.node.manager.lower_boundary();
@@ -190,7 +218,38 @@ impl ZeusEngine {
         let mut app_events = Vec::new();
         self.client_datagrams.clear();
 
-        self.node.update(dt);
+        let mut exit_candidates = self.node.update(dt);
+        self.handoff_retry_counter += 1;
+        let my_cell = self.node.manager.cell().clone();
+        if self.handoff_retry_counter % 64 == 0 {
+            let stuck: Vec<u64> = self.node.manager.entities.iter()
+                .filter(|(_, e)| e.state == AuthorityState::HandoffOut && !my_cell.contains(e.pos))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in &stuck {
+                if self.peer_connections.is_empty() {
+                    self.node.manager.remove_entity(*id);
+                    app_events.push(ZeusEvent::EntityDeparted { id: *id });
+                } else {
+                    let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
+                    for conn in &self.peer_connections {
+                        let timeout_dur = std::time::Duration::from_millis(10);
+                        if let Ok(Ok(mut stream)) =
+                            tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                        {
+                            let _ = stream.write_all(&msg_bytes).await;
+                            let _ = stream.finish();
+                        }
+                    }
+                }
+            }
+        }
+        let forced_exits = self.node.manager.force_exit_check();
+        for fe in forced_exits {
+            if !exit_candidates.iter().any(|(id, _)| *id == fe.0) {
+                exit_candidates.push(fe);
+            }
+        }
         self.discovery.update(dt);
 
         let total_entities = self.node.manager.entity_count() as u16;
@@ -376,39 +435,50 @@ impl ZeusEngine {
             });
         }
 
+        let mut targeted_handoffs: Vec<(u64, quinn::Connection)> = Vec::new();
+        let mut broadcast_handoffs: Vec<u64> = Vec::new();
+        for (id, _face) in &exit_candidates {
+            if let Some(conn) = self.find_target_connection(*id) {
+                targeted_handoffs.push((*id, conn.clone()));
+            } else if !self.peer_connections.is_empty() {
+                broadcast_handoffs.push(*id);
+            }
+        }
+        for (id, conn) in targeted_handoffs {
+            self.node.manager.set_state(id, AuthorityState::HandoffOut);
+            let msg_bytes = build_handoff_msg(id, HandoffType::Offer, &self.node);
+            let timeout_dur = std::time::Duration::from_millis(10);
+            if let Ok(Ok(mut stream)) =
+                tokio::time::timeout(timeout_dur, conn.open_uni()).await
+            {
+                let _ = stream.write_all(&msg_bytes).await;
+                let _ = stream.finish();
+            }
+        }
+        for id in broadcast_handoffs {
+            self.node.manager.set_state(id, AuthorityState::HandoffOut);
+            let msg_bytes = build_handoff_msg(id, HandoffType::Offer, &self.node);
+            for conn in &self.peer_connections {
+                let timeout_dur = std::time::Duration::from_millis(10);
+                if let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                {
+                    let _ = stream.write_all(&msg_bytes).await;
+                    let _ = stream.finish();
+                }
+            }
+        }
+
         let messages: Vec<_> = self.node.outgoing_messages.drain(..).collect();
         for (id, msg_type) in messages {
             let msg_bytes = build_handoff_msg(id, msg_type, &self.node);
-            if msg_type == HandoffType::Offer {
-                if let Some(conn) = self.find_target_connection(id) {
-                    let conn = conn.clone();
-                    let timeout_dur = std::time::Duration::from_millis(2);
-                    if let Ok(Ok(mut stream)) =
-                        tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                    {
-                        let _ = stream.write_all(&msg_bytes).await;
-                        let _ = stream.finish();
-                    }
-                } else {
-                    for conn in &self.peer_connections {
-                        let timeout_dur = std::time::Duration::from_millis(2);
-                        if let Ok(Ok(mut stream)) =
-                            tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                        {
-                            let _ = stream.write_all(&msg_bytes).await;
-                            let _ = stream.finish();
-                        }
-                    }
-                }
-            } else {
-                for conn in &self.peer_connections {
-                    let timeout_dur = std::time::Duration::from_millis(2);
-                    if let Ok(Ok(mut stream)) =
-                        tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                    {
-                        let _ = stream.write_all(&msg_bytes).await;
-                        let _ = stream.finish();
-                    }
+            for conn in &self.peer_connections {
+                let timeout_dur = std::time::Duration::from_millis(2);
+                if let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                {
+                    let _ = stream.write_all(&msg_bytes).await;
+                    let _ = stream.finish();
                 }
             }
         }
@@ -442,15 +512,13 @@ impl ZeusEngine {
         let mut all_entries: Vec<BroadcastEntry> = Vec::new();
         let mut current_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-        let upper_b = self.node.manager.boundary();
-        let lower_b = self.node.manager.lower_boundary();
         let overlap_margin = 2.0_f32;
+        let cell = self.node.manager.cell().clone();
 
         for e in self.node.manager.entities.values() {
-            if e.state != crate::entity_manager::AuthorityState::Remote {
+            if e.state == crate::entity_manager::AuthorityState::Local && cell.contains(e.pos) {
                 current_ids.insert(e.id);
-                let near_boundary = (e.pos.0 - upper_b).abs() < overlap_margin
-                    || (e.pos.0 - lower_b).abs() < overlap_margin;
+                let near_boundary = cell.near_any_face(e.pos, overlap_margin);
                 let qp = (quantize_pos(e.pos.0), quantize_pos(e.pos.1), quantize_pos(e.pos.2));
                 if force_full || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
                     self.last_broadcast_state.insert(e.id, qp);
@@ -548,6 +616,16 @@ impl ZeusEngine {
         let batch_size = ((max_dg.saturating_sub(sig_overhead)) / per_entity_bytes).max(1);
 
         let node_id = self.discovery.local_id;
+        let my_cell = self.node.manager.cell().clone();
+
+        let neighbor_addrs: std::collections::HashSet<SocketAddr> = self.discovery.peers.values()
+            .filter(|p| {
+                p.cell.as_ref().is_some_and(|c| my_cell.shares_face(c))
+            })
+            .map(|p| p.addr)
+            .collect();
+
+        let use_spatial_filter = !neighbor_addrs.is_empty();
 
         for chunk in all_entries.chunks(batch_size) {
             let mut buf = Vec::with_capacity(sig_overhead + chunk.len() * per_entity_bytes);
@@ -571,6 +649,9 @@ impl ZeusEngine {
 
             let payload: bytes::Bytes = buf.into();
             for conn in &self.peer_connections {
+                if use_spatial_filter && !neighbor_addrs.contains(&conn.remote_address()) {
+                    continue;
+                }
                 let _ = conn.send_datagram(payload.clone());
             }
         }
@@ -600,6 +681,45 @@ pub fn quantize_vel(v: f32) -> i16 {
 
 pub fn dequantize_vel(v: i16) -> f32 {
     v as f32 / 100.0
+}
+
+pub fn quantize_pos_i32(v: f32) -> i32 {
+    (v * 1000.0).round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
+}
+
+pub fn dequantize_pos_i32(v: i32) -> f32 {
+    v as f32 / 1000.0
+}
+
+pub fn quantize_cell_relative(pos: (f32, f32, f32), cell_origin: (f32, f32, f32)) -> (i16, i16, i16) {
+    let rel = (pos.0 - cell_origin.0, pos.1 - cell_origin.1, pos.2 - cell_origin.2);
+    (quantize_pos(rel.0), quantize_pos(rel.1), quantize_pos(rel.2))
+}
+
+pub fn dequantize_cell_relative(offset: (i16, i16, i16), cell_origin: (f32, f32, f32)) -> (f32, f32, f32) {
+    (
+        dequantize_pos(offset.0) + cell_origin.0,
+        dequantize_pos(offset.1) + cell_origin.1,
+        dequantize_pos(offset.2) + cell_origin.2,
+    )
+}
+
+pub fn encode_hierarchical(cell_id: u32, offset: (i16, i16, i16)) -> [u8; 10] {
+    let mut buf = [0u8; 10];
+    buf[0..4].copy_from_slice(&cell_id.to_le_bytes());
+    buf[4..6].copy_from_slice(&offset.0.to_le_bytes());
+    buf[6..8].copy_from_slice(&offset.1.to_le_bytes());
+    buf[8..10].copy_from_slice(&offset.2.to_le_bytes());
+    buf
+}
+
+pub fn decode_hierarchical(data: &[u8]) -> Option<(u32, (i16, i16, i16))> {
+    if data.len() < 10 { return None; }
+    let cell_id = u32::from_le_bytes(data[0..4].try_into().ok()?);
+    let ox = i16::from_le_bytes(data[4..6].try_into().ok()?);
+    let oy = i16::from_le_bytes(data[6..8].try_into().ok()?);
+    let oz = i16::from_le_bytes(data[8..10].try_into().ok()?);
+    Some((cell_id, (ox, oy, oz)))
 }
 
 pub fn encode_compact_client(entries: &[(u64, (f32, f32, f32), (f32, f32, f32))]) -> Vec<u8> {
@@ -665,6 +785,10 @@ pub fn decode_compact_client(data: &[u8]) -> Vec<(u64, (f32, f32, f32), (f32, f3
         result.push((id, (px, py, pz), (vx, vy, vz)));
     }
     result
+}
+
+pub fn build_handoff_msg_pub(id: u64, msg_type: HandoffType, node: &NodeActor) -> Vec<u8> {
+    build_handoff_msg(id, msg_type, node)
 }
 
 fn build_handoff_msg(id: u64, msg_type: HandoffType, node: &NodeActor) -> Vec<u8> {
@@ -735,6 +859,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         engine.node.manager.add_entity(Entity {
@@ -767,6 +892,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         for i in 0..100 {
@@ -802,6 +928,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let _engine = ZeusEngine::new(config).await.unwrap();
         let mut node = NodeActor::new(100.0, 5.0, 0.0);
@@ -829,6 +956,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         for i in 0..1000 {
@@ -885,6 +1013,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
 
@@ -915,6 +1044,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         engine.node.manager.add_entity(Entity {
@@ -993,6 +1123,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
 
@@ -1022,6 +1153,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         engine.node.manager.add_entity(Entity {
@@ -1045,6 +1177,7 @@ mod tests {
             margin: 2.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         engine.node.manager.add_entity(Entity {
@@ -1067,6 +1200,7 @@ mod tests {
             margin: 2.0,
             ordinal: 0,
             lower_boundary: 8.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         engine.node.manager.add_entity(Entity {
@@ -1089,6 +1223,7 @@ mod tests {
             margin: 2.0,
             ordinal: 1,
             lower_boundary: 8.0,
+            cell: None,
         };
         let mut engine = ZeusEngine::new(config).await.unwrap();
         engine.node.manager.add_entity(Entity {
@@ -1111,6 +1246,7 @@ mod tests {
             margin: 2.0,
             ordinal: 1,
             lower_boundary: 8.0,
+            cell: None,
         };
         let engine = ZeusEngine::new(config).await.unwrap();
         let conn = engine.find_target_connection(999);

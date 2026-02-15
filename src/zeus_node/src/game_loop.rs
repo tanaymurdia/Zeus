@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use crate::engine::{ZeusConfig, ZeusEngine, ZeusEvent};
 use crate::entity_manager::AuthorityState;
-use zeus_common::HandoffType;
 
 pub trait GameWorld: Send {
     fn step(&mut self, dt: f32);
@@ -29,21 +28,7 @@ impl<W: GameWorld> GameLoop<W> {
     }
 
     pub async fn tick(&mut self, dt: f32) -> Result<Vec<ZeusEvent>, Box<dyn std::error::Error>> {
-        let local_sim = self.world.locally_simulated_ids().clone();
         let events = self.engine.tick(dt).await?;
-
-        for (id, entity) in self.engine.node.manager.entities.iter_mut() {
-            if entity.state == AuthorityState::HandoffOut && !local_sim.contains(id) {
-                entity.state = AuthorityState::Local;
-            }
-        }
-        self.engine.node.outgoing_messages.retain(|(id, msg_type)| {
-            if *msg_type == HandoffType::Offer {
-                local_sim.contains(id)
-            } else {
-                true
-            }
-        });
 
         for event in &events {
             match event {
@@ -62,10 +47,11 @@ impl<W: GameWorld> GameLoop<W> {
         }
 
         let local_ids = self.world.locally_simulated_ids().clone();
+        let my_cell = self.engine.node.manager.cell().clone();
         for (id, entity) in &self.engine.node.manager.entities {
             if !local_ids.contains(id)
-                && (entity.state == AuthorityState::Local
-                    || entity.state == AuthorityState::HandoffOut)
+                && (entity.state == AuthorityState::Local || entity.state == AuthorityState::HandoffOut)
+                && my_cell.contains(entity.pos)
             {
                 self.world.on_entity_update(*id, entity.pos, entity.vel);
             }
@@ -79,10 +65,19 @@ impl<W: GameWorld> GameLoop<W> {
 
         self.world.step(dt);
 
+        let mut evicted = Vec::new();
         for id in &local_ids {
             if let Some((pos, vel)) = self.world.get_entity_state(*id) {
-                self.engine.update_entity(*id, pos, vel);
+                if my_cell.contains(pos) {
+                    self.engine.update_entity(*id, pos, vel);
+                } else {
+                    self.engine.update_entity(*id, pos, (0.0, 0.0, 0.0));
+                    evicted.push(*id);
+                }
             }
+        }
+        for id in &evicted {
+            self.world.on_entity_departed(*id);
         }
 
         self.broadcast_counter += 1;
@@ -122,6 +117,27 @@ impl<W: GameWorld> GameLoop<W> {
         self.engine.set_lower_boundary(lower_boundary);
     }
 
+    pub fn set_cell(&mut self, cell: crate::cell::Cell) {
+        self.engine.set_cell(cell);
+    }
+
+    pub fn evict_out_of_cell_from_physics(&mut self) {
+        let cell = self.engine.node.manager.cell().clone();
+        let local_ids: Vec<u64> = self.world.locally_simulated_ids().iter().copied().collect();
+        for id in &local_ids {
+            let outside = if let Some(entity) = self.engine.node.manager.entities.get(id) {
+                !cell.contains(entity.pos)
+            } else if let Some((pos, _)) = self.world.get_entity_state(*id) {
+                !cell.contains(pos)
+            } else {
+                false
+            };
+            if outside {
+                self.world.on_entity_departed(*id);
+            }
+        }
+    }
+
     pub fn broadcast_status(&self) {
         let entity_count = self.engine.node.manager.entities.len() as u16;
         let active_nodes = self.engine.discovery.total_node_count().max(1) as u8;
@@ -154,16 +170,34 @@ impl<W: GameWorld> GameLoop<W> {
 
     pub fn should_split(&self, local_entity_count: usize) -> bool {
         let current_nodes = self.engine.discovery.total_node_count();
-        let desired_nodes = if local_entity_count >= 15 {
-            4
-        } else if local_entity_count >= 10 {
-            3
-        } else if local_entity_count >= 5 {
-            2
-        } else {
-            1
-        };
-        desired_nodes > current_nodes
+        local_entity_count >= 40 && current_nodes < 16
+    }
+
+    pub fn local_entity_positions(&self) -> Vec<(u64, (f32, f32, f32))> {
+        self.engine
+            .node
+            .manager
+            .entities
+            .iter()
+            .filter(|(_, e)| e.state == AuthorityState::Local)
+            .map(|(id, e)| (*id, e.pos))
+            .collect()
+    }
+
+    pub fn broadcast_cells(&self, cells: &[crate::cell::Cell]) {
+        if cells.is_empty() {
+            return;
+        }
+        let mut buf = Vec::with_capacity(2 + cells.len() * 24);
+        buf.push(0xEE);
+        buf.push(cells.len() as u8);
+        for cell in cells {
+            buf.extend_from_slice(&cell.serialize());
+        }
+        let payload: bytes::Bytes = buf.into();
+        for conn in &self.engine.client_connections {
+            let _ = conn.send_datagram(payload.clone());
+        }
     }
 }
 
@@ -258,6 +292,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mock = MockGameWorld::new();
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
@@ -279,6 +314,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mock = MockGameWorld::new();
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
@@ -313,6 +349,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let mock = MockGameWorld::new();
         let mut game_loop = GameLoop::new(config, mock).await.unwrap();
@@ -337,6 +374,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let local_ids: HashSet<u64> = [10].into_iter().collect();
         let mock = MockGameWorld::new()
@@ -390,6 +428,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let local_ids: HashSet<u64> = [10].into_iter().collect();
         let mock = MockGameWorld::new()
@@ -429,6 +468,7 @@ mod tests {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let local_ids: HashSet<u64> = [1, 2, 3].into_iter().collect();
         let mock = MockGameWorld::new().with_local_ids(local_ids);

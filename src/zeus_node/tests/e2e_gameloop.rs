@@ -87,6 +87,7 @@ async fn test_single_client_server_round_trip() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world = TestWorld::new();
     let mut game_loop = GameLoop::new(config, world).await.unwrap();
@@ -165,6 +166,7 @@ async fn test_multiplayer_two_clients_see_each_other() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world = TestWorld::new();
     let mut game_loop = GameLoop::new(config, world).await.unwrap();
@@ -238,6 +240,7 @@ async fn test_multiplayer_player_id_broadcast() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world = TestWorld::new();
     let mut game_loop = GameLoop::new(config, world).await.unwrap();
@@ -325,6 +328,7 @@ async fn test_spawn_request_0xdd_creates_entities() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world = TestWorld::new();
     let mut game_loop = GameLoop::new(config, world).await.unwrap();
@@ -371,6 +375,7 @@ async fn test_multinode_entity_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world0 = TestWorld::new();
     let mut node0 = GameLoop::new(config_node0, world0).await.unwrap();
@@ -383,6 +388,7 @@ async fn test_multinode_entity_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world1 = TestWorld::new();
     let mut node1 = GameLoop::new(config_node1, world1).await.unwrap();
@@ -458,6 +464,7 @@ async fn test_multinode_client_receives_cross_node_entities() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world0 = TestWorld::new();
     let mut node0 = GameLoop::new(config_node0, world0).await.unwrap();
@@ -511,6 +518,7 @@ async fn test_server_status_0xaa_broadcast() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world = TestWorld::new();
     let mut game_loop = GameLoop::new(config, world).await.unwrap();
@@ -578,6 +586,7 @@ async fn test_remote_gossip_fed_to_world() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world = TestWorld::new();
     let mut game_loop = GameLoop::new(config, world).await.unwrap();
@@ -608,6 +617,7 @@ async fn test_gossip_two_nodes_propagation() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world0 = TestWorld::new();
     let mut node0 = GameLoop::new(config0, world0).await.unwrap();
@@ -620,6 +630,7 @@ async fn test_gossip_two_nodes_propagation() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let world1 = TestWorld::new();
     let mut node1 = GameLoop::new(config1, world1).await.unwrap();
@@ -656,6 +667,7 @@ async fn test_3node_gossip_chain() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -667,6 +679,7 @@ async fn test_3node_gossip_chain() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -678,6 +691,7 @@ async fn test_3node_gossip_chain() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
 
@@ -715,6 +729,7 @@ async fn test_gossip_no_infinite_loop() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -726,6 +741,7 @@ async fn test_gossip_no_infinite_loop() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -756,6 +772,7 @@ async fn test_client_sees_full_world_from_any_node() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -767,6 +784,7 @@ async fn test_client_sees_full_world_from_any_node() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -840,6 +858,7 @@ async fn test_e2e_4node_full_world() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let n0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     addrs.push(n0.engine.endpoint.local_addr().unwrap());
@@ -853,6 +872,7 @@ async fn test_e2e_4node_full_world() {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let n = GameLoop::new(cfg, TestWorld::new()).await.unwrap();
         addrs.push(n.engine.endpoint.local_addr().unwrap());
@@ -953,6 +973,7 @@ async fn test_e2e_handoff_with_gossip() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -964,6 +985,7 @@ async fn test_e2e_handoff_with_gossip() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1017,6 +1039,7 @@ async fn test_stress_4node_50_entities() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let n0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     addrs.push(n0.engine.endpoint.local_addr().unwrap());
@@ -1030,6 +1053,7 @@ async fn test_stress_4node_50_entities() {
             margin: 5.0,
             ordinal: 0,
             lower_boundary: 0.0,
+            cell: None,
         };
         let n = GameLoop::new(cfg, TestWorld::new()).await.unwrap();
         addrs.push(n.engine.endpoint.local_addr().unwrap());
@@ -1128,6 +1152,7 @@ async fn test_stress_rapid_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1139,6 +1164,7 @@ async fn test_stress_rapid_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1185,6 +1211,7 @@ async fn test_handoff_with_preexisting_gossip_proxy() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1196,6 +1223,7 @@ async fn test_handoff_with_preexisting_gossip_proxy() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1256,6 +1284,7 @@ async fn test_boundary_shift_position_continuity() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1267,6 +1296,7 @@ async fn test_boundary_shift_position_continuity() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1328,6 +1358,7 @@ async fn test_gossip_gates_boundary_shift() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1341,6 +1372,7 @@ async fn test_gossip_gates_boundary_shift() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1411,6 +1443,7 @@ async fn test_authority_unique_during_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1422,6 +1455,7 @@ async fn test_authority_unique_during_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1491,6 +1525,7 @@ async fn test_sequential_3node_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1512,6 +1547,7 @@ async fn test_sequential_3node_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -1538,6 +1574,7 @@ async fn test_sequential_3node_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
 
@@ -1596,6 +1633,7 @@ async fn test_entity_count_conserved_during_rapid_boundary_change() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1607,6 +1645,7 @@ async fn test_entity_count_conserved_during_rapid_boundary_change() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1671,6 +1710,7 @@ async fn test_client_sees_all_during_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1687,6 +1727,7 @@ async fn test_client_sees_all_during_split() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1698,8 +1739,11 @@ async fn test_client_sees_all_during_split() {
         sleep(Duration::from_millis(10)).await;
     }
 
+    let node1_addr = node1.engine.endpoint.local_addr().unwrap();
     let mut client = ZeusClient::new(11001).unwrap();
     client.connect(node0_addr).await.unwrap();
+    let mut client2 = ZeusClient::new(11002).unwrap();
+    client2.connect(node1_addr).await.unwrap();
     sleep(Duration::from_millis(50)).await;
 
     node0.set_boundary(10.0);
@@ -1710,10 +1754,11 @@ async fn test_client_sees_all_during_split() {
         sleep(Duration::from_millis(5)).await;
     }
 
-    let conn = client.connection().unwrap();
+    let conn0 = client.connection().unwrap();
+    let conn1 = client2.connection().unwrap();
     let mut seen_ids = HashSet::new();
     for _ in 0..300 {
-        match tokio::time::timeout(Duration::from_millis(10), conn.read_datagram()).await {
+        match tokio::time::timeout(Duration::from_millis(10), conn0.read_datagram()).await {
             Ok(Ok(data)) => {
                 if !data.is_empty() && data[0] == 0xCC {
                     for (id, _, _) in parse_0xcc_datagram(&data) {
@@ -1721,7 +1766,17 @@ async fn test_client_sees_all_during_split() {
                     }
                 }
             }
-            _ => break,
+            _ => {}
+        }
+        match tokio::time::timeout(Duration::from_millis(10), conn1.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        seen_ids.insert(id);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1748,6 +1803,7 @@ async fn test_cross_node_collision_after_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1759,6 +1815,7 @@ async fn test_cross_node_collision_after_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1826,6 +1883,7 @@ async fn test_3node_boundary_convergence() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1837,6 +1895,7 @@ async fn test_3node_boundary_convergence() {
         margin: 2.0,
         ordinal: 1,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -1848,6 +1907,7 @@ async fn test_3node_boundary_convergence() {
         margin: 2.0,
         ordinal: 2,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
 
@@ -1882,6 +1942,7 @@ async fn test_leftward_handoff() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1893,6 +1954,7 @@ async fn test_leftward_handoff() {
         margin: 2.0,
         ordinal: 1,
         lower_boundary: 8.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -1944,6 +2006,7 @@ async fn test_no_dual_ownership_3node_targeted() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -1955,6 +2018,7 @@ async fn test_no_dual_ownership_3node_targeted() {
         margin: 2.0,
         ordinal: 1,
         lower_boundary: 8.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -1966,6 +2030,7 @@ async fn test_no_dual_ownership_3node_targeted() {
         margin: 2.0,
         ordinal: 2,
         lower_boundary: 16.0,
+        cell: None,
     };
     let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
 
@@ -2026,6 +2091,7 @@ async fn test_entity_conservation_bidirectional() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -2037,6 +2103,7 @@ async fn test_entity_conservation_bidirectional() {
         margin: 2.0,
         ordinal: 1,
         lower_boundary: 12.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -2090,6 +2157,7 @@ async fn test_membership_convergence_daisy_chain() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -2102,6 +2170,7 @@ async fn test_membership_convergence_daisy_chain() {
         margin: 2.0,
         ordinal: 1,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -2114,6 +2183,7 @@ async fn test_membership_convergence_daisy_chain() {
         margin: 2.0,
         ordinal: 2,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
     let node2_id = node2.engine.discovery.local_id;
@@ -2152,6 +2222,7 @@ async fn test_ed25519_verifying_key_exchange() {
         margin: 2.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -2165,6 +2236,7 @@ async fn test_ed25519_verifying_key_exchange() {
         margin: 2.0,
         ordinal: 1,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_id = node1.engine.discovery.local_id;
@@ -2210,6 +2282,7 @@ async fn test_full_mesh_1hop_gossip_3nodes() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -2221,6 +2294,7 @@ async fn test_full_mesh_1hop_gossip_3nodes() {
         margin: 5.0,
         ordinal: 1,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
     let node1_addr = node1.engine.endpoint.local_addr().unwrap();
@@ -2232,6 +2306,7 @@ async fn test_full_mesh_1hop_gossip_3nodes() {
         margin: 5.0,
         ordinal: 2,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
 
@@ -2278,6 +2353,7 @@ async fn test_sdk_broadcast_status() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut game_loop = GameLoop::new(config, TestWorld::new()).await.unwrap();
     let node_addr = game_loop.engine.endpoint.local_addr().unwrap();
@@ -2331,14 +2407,14 @@ async fn test_sdk_should_split() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let game_loop = GameLoop::new(config, TestWorld::new()).await.unwrap();
 
     assert!(!game_loop.should_split(0), "0 entities should not trigger split");
-    assert!(!game_loop.should_split(4), "4 entities should not trigger split (threshold is 5)");
-    assert!(game_loop.should_split(5), "5 entities should trigger split (1 node -> 2)");
-    assert!(game_loop.should_split(10), "10 entities should trigger split (1 node -> 3)");
-    assert!(game_loop.should_split(15), "15 entities should trigger split (1 node -> 4)");
+    assert!(!game_loop.should_split(39), "39 entities should not trigger split (threshold is 40)");
+    assert!(game_loop.should_split(40), "40 entities should trigger split");
+    assert!(game_loop.should_split(50), "50 entities should trigger split");
 }
 
 #[tokio::test]
@@ -2350,6 +2426,7 @@ async fn test_node_only_broadcasts_local_to_clients() {
         margin: 5.0,
         ordinal: 0,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
     let node0_addr = node0.engine.endpoint.local_addr().unwrap();
@@ -2361,6 +2438,7 @@ async fn test_node_only_broadcasts_local_to_clients() {
         margin: 5.0,
         ordinal: 1,
         lower_boundary: 0.0,
+        cell: None,
     };
     let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
 
@@ -2402,4 +2480,556 @@ async fn test_node_only_broadcasts_local_to_clients() {
         !seen_from_node0.contains(&200),
         "Node 0 should NOT broadcast Node 1's entity 200 to client (full mesh: each node only sends local)"
     );
+}
+
+#[tokio::test]
+async fn test_3d_cell_entity_stays_local_at_world_edge() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell_a),
+    };
+    let world = TestWorld::new();
+    let mut node = GameLoop::new(config, world).await.unwrap();
+
+    node.world.spawn_local(1, (25.0, 49.0, 25.0), (0.0, 10.0, 0.0));
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 1,
+        pos: (25.0, 49.0, 25.0),
+        vel: (0.0, 10.0, 0.0),
+        state: AuthorityState::Local,
+        verifying_key: None,
+    });
+
+    for _ in 0..30 {
+        node.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let entity = node.engine.node.manager.get_entity(1);
+    assert!(
+        entity.is_some(),
+        "Entity should still exist on node (not lost)"
+    );
+    let e = entity.unwrap();
+    assert_eq!(
+        e.state,
+        AuthorityState::Local,
+        "Entity at world edge with no neighbor should stay Local, not HandoffOut. State: {:?}",
+        e.state
+    );
+}
+
+#[tokio::test]
+async fn test_3d_cell_handoff_across_z_boundary() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell_a = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 50.0);
+    let cell_b = Cell::new(0.0, 100.0, 0.0, 100.0, 50.0, 100.0);
+
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell_a.clone()),
+    };
+    let world0 = TestWorld::new();
+    let mut node0 = GameLoop::new(config0, world0).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let world1 = TestWorld::new();
+    let mut node1 = GameLoop::new(config1, world1).await.unwrap();
+    let node1_addr = node1.engine.endpoint.local_addr().unwrap();
+    let node1_id = node1.engine.discovery.local_id;
+
+    sleep(Duration::from_millis(100)).await;
+    for _ in 0..10 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    node0.engine.discovery.update_peer_cell(node1_id, cell_b.clone());
+
+    node0.world.spawn_local(42, (50.0, 50.0, 48.0), (0.0, 0.0, 10.0));
+    node0.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 42,
+        pos: (50.0, 50.0, 48.0),
+        vel: (0.0, 0.0, 10.0),
+        state: AuthorityState::Local,
+        verifying_key: None,
+    });
+
+    let mut handoff_occurred = false;
+    for _ in 0..60 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        if let Some(e) = node1.engine.node.manager.get_entity(42) {
+            if e.state == AuthorityState::Local {
+                handoff_occurred = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        handoff_occurred,
+        "Entity should handoff across Z boundary from node0 to node1 via 3D cell routing"
+    );
+}
+
+#[tokio::test]
+async fn test_3d_cell_offer_rejected_if_outside_cell() {
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let mut node = zeus_node::node_actor::NodeActor::new_3d(cell, 1.0);
+
+    let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
+    let pos = zeus_common::Vec3::new(75.0, 25.0, 25.0);
+    let vel = zeus_common::Vec3::new(0.0, 0.0, 0.0);
+    let sig = builder.create_vector(&[0u8; 64]);
+    let ghost = zeus_common::Ghost::create(
+        &mut builder,
+        &zeus_common::GhostArgs {
+            entity_id: 99,
+            position: Some(&pos),
+            velocity: Some(&vel),
+            signature: Some(sig),
+        },
+    );
+    let msg = zeus_common::HandoffMsg::create(
+        &mut builder,
+        &zeus_common::HandoffMsgArgs {
+            entity_id: 99,
+            type_: zeus_common::HandoffType::Offer,
+            state: Some(ghost),
+        },
+    );
+    builder.finish(msg, None);
+    let buf = builder.finished_data();
+    let msg = zeus_common::flatbuffers::root::<zeus_common::HandoffMsg>(buf).unwrap();
+
+    node.handle_handoff_msg(msg);
+    assert!(
+        node.manager.get_entity(99).is_none(),
+        "Offer with entity position (75,25,25) outside cell [0-50,0-50,0-50] should be rejected"
+    );
+}
+
+#[tokio::test]
+async fn test_3d_cell_offer_accepted_if_inside_cell() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let mut node = zeus_node::node_actor::NodeActor::new_3d(cell, 1.0);
+
+    let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
+    let pos = zeus_common::Vec3::new(25.0, 25.0, 25.0);
+    let vel = zeus_common::Vec3::new(0.0, 0.0, 0.0);
+    let sig = builder.create_vector(&[0u8; 64]);
+    let ghost = zeus_common::Ghost::create(
+        &mut builder,
+        &zeus_common::GhostArgs {
+            entity_id: 99,
+            position: Some(&pos),
+            velocity: Some(&vel),
+            signature: Some(sig),
+        },
+    );
+    let msg = zeus_common::HandoffMsg::create(
+        &mut builder,
+        &zeus_common::HandoffMsgArgs {
+            entity_id: 99,
+            type_: zeus_common::HandoffType::Offer,
+            state: Some(ghost),
+        },
+    );
+    builder.finish(msg, None);
+    let buf = builder.finished_data();
+    let msg = zeus_common::flatbuffers::root::<zeus_common::HandoffMsg>(buf).unwrap();
+
+    node.handle_handoff_msg(msg);
+    let entity = node.manager.get_entity(99);
+    assert!(entity.is_some(), "Offer inside cell should be accepted");
+    assert_eq!(entity.unwrap().state, AuthorityState::Local);
+}
+
+#[tokio::test]
+async fn test_no_broadcast_to_all_peers_on_3d_exit() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 100.0, 0.0, 100.0);
+
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell_a),
+    };
+    let world = TestWorld::new();
+    let mut node = GameLoop::new(config, world).await.unwrap();
+
+    node.world.spawn_local(1, (25.0, 99.0, 50.0), (0.0, 10.0, 0.0));
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 1,
+        pos: (25.0, 99.0, 50.0),
+        vel: (0.0, 10.0, 0.0),
+        state: AuthorityState::Local,
+        verifying_key: None,
+    });
+
+    for _ in 0..20 {
+        node.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let e = node.engine.node.manager.get_entity(1).unwrap();
+    assert_eq!(
+        e.state,
+        AuthorityState::Local,
+        "Entity exiting on Y face with no peer should remain Local (no blind broadcast). State: {:?}",
+        e.state
+    );
+}
+
+#[tokio::test]
+async fn test_autoscaler_split_recommendation() {
+    use zeus_node::autoscaler::{AutoScaleConfig, AutoScaler, ScaleEvent};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let mut scaler = AutoScaler::new(AutoScaleConfig {
+        split_threshold: 10,
+        warmup_threshold: 10,
+        merge_threshold: 2,
+        split_cooldown_ticks: 0,
+        merge_cooldown_ticks: 0,
+        max_nodes: 8,
+        startup_grace_ticks: 0,
+    });
+
+    let positions: Vec<(f32, f32, f32)> = (0..15).map(|i| (i as f32 * 5.0, 50.0, 50.0)).collect();
+    let peer_ids = HashSet::new();
+    let peer_cells = HashMap::new();
+
+    let events = scaler.evaluate(&cell, 15, &peer_ids, &peer_cells, 1, &positions);
+    let split = events.iter().find(|e| matches!(e, ScaleEvent::WarmupRecommended { .. }));
+    assert!(split.is_some(), "Should recommend split with 15 entities > threshold 10");
+
+    if let Some(ScaleEvent::WarmupRecommended { projected_cell: keep_cell, projected_new_cell: new_cell, .. }) = split {
+        let union = keep_cell.union(new_cell);
+        assert!((union.x_min - cell.x_min).abs() < 1e-3);
+        assert!((union.x_max - cell.x_max).abs() < 1e-3);
+        assert!((union.y_min - cell.y_min).abs() < 1e-3);
+        assert!((union.y_max - cell.y_max).abs() < 1e-3);
+        assert!((union.z_min - cell.z_min).abs() < 1e-3);
+        assert!((union.z_max - cell.z_max).abs() < 1e-3);
+    }
+}
+
+#[tokio::test]
+async fn test_autoscaler_merge_recommendation() {
+    use zeus_node::autoscaler::{AutoScaleConfig, AutoScaler, ScaleEvent};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 100.0, 0.0, 100.0);
+    let mut scaler = AutoScaler::new(AutoScaleConfig {
+        split_threshold: 40,
+        warmup_threshold: 40,
+        merge_threshold: 5,
+        split_cooldown_ticks: 0,
+        merge_cooldown_ticks: 0,
+        max_nodes: 16,
+        startup_grace_ticks: 0,
+    });
+
+    let peer_ids = HashSet::new();
+    let peer_cells = HashMap::new();
+    let events = scaler.evaluate(&cell, 2, &peer_ids, &peer_cells, 2, &[]);
+    assert!(events.iter().any(|e| matches!(e, ScaleEvent::MergeRecommended)));
+}
+
+#[tokio::test]
+async fn test_autoscaler_cell_expansion_on_peer_death() {
+    use zeus_node::autoscaler::{AutoScaleConfig, AutoScaler, ScaleEvent};
+    use zeus_node::cell::Cell;
+
+    let my_cell = Cell::new(0.0, 50.0, 0.0, 100.0, 0.0, 100.0);
+    let dead_cell = Cell::new(50.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let mut scaler = AutoScaler::new(AutoScaleConfig::default());
+
+    let mut peer_ids = HashSet::new();
+    peer_ids.insert(42);
+    let mut peer_cells = HashMap::new();
+    peer_cells.insert(42, dead_cell.clone());
+    scaler.evaluate(&my_cell, 10, &peer_ids, &peer_cells, 2, &[]);
+
+    let empty_peers = HashSet::new();
+    let empty_cells = HashMap::new();
+    let events = scaler.evaluate(&my_cell, 10, &empty_peers, &empty_cells, 1, &[]);
+
+    let expanded = events.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
+    assert!(expanded.is_some(), "Should expand cell when adjacent peer dies");
+    if let Some(ScaleEvent::CellExpanded { new_cell }) = expanded {
+        assert!((new_cell.x_min - 0.0).abs() < 1e-3);
+        assert!((new_cell.x_max - 100.0).abs() < 1e-3);
+    }
+}
+
+#[tokio::test]
+async fn test_autoscaler_binary_split_produces_valid_cells() {
+    use zeus_node::autoscaler::AutoScaler;
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 100.0, -50.0, 50.0, 0.0, 200.0);
+    let positions: Vec<(f32, f32, f32)> = (0..40).map(|i| {
+        (25.0 + (i as f32 % 10.0), (i as f32 % 20.0) - 10.0, 100.0)
+    }).collect();
+
+    let (keep, new, _axis, _pos) = AutoScaler::compute_binary_split(&cell, &positions);
+    assert!(keep.volume() > 0.0);
+    assert!(new.volume() > 0.0);
+    let union = keep.union(&new);
+    assert!((union.x_min - cell.x_min).abs() < 1e-3);
+    assert!((union.x_max - cell.x_max).abs() < 1e-3);
+    assert!((union.y_min - cell.y_min).abs() < 1e-3);
+    assert!((union.y_max - cell.y_max).abs() < 1e-3);
+    assert!((union.z_min - cell.z_min).abs() < 1e-3);
+    assert!((union.z_max - cell.z_max).abs() < 1e-3);
+
+    let keep_count = positions.iter().filter(|p| keep.contains(**p)).count();
+    let new_count = positions.iter().filter(|p| new.contains(**p)).count();
+    assert!(keep_count >= new_count, "keep_cell should have more entities");
+}
+
+#[tokio::test]
+async fn test_gameloop_local_entity_positions() {
+    use zeus_node::entity_manager::AuthorityState;
+
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut node = GameLoop::new(config, world).await.unwrap();
+
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 1, pos: (10.0, 20.0, 30.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 2, pos: (40.0, 50.0, 60.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Remote, verifying_key: None,
+    });
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 3, pos: (70.0, 80.0, 90.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let positions = node.local_entity_positions();
+    assert_eq!(positions.len(), 2);
+    assert!(positions.iter().any(|(id, _)| *id == 1));
+    assert!(positions.iter().any(|(id, _)| *id == 3));
+    assert!(!positions.iter().any(|(id, _)| *id == 2));
+}
+
+#[tokio::test]
+async fn test_entity_manager_remove_entity() {
+    use zeus_node::entity_manager::{Entity, AuthorityState, EntityManager};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let mut em = EntityManager::new_3d(cell, 1.0);
+    em.add_entity(Entity {
+        id: 1, pos: (50.0, 50.0, 50.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    assert!(em.get_entity(1).is_some());
+    let removed = em.remove_entity(1);
+    assert!(removed.is_some());
+    assert!(em.get_entity(1).is_none());
+    let removed_again = em.remove_entity(1);
+    assert!(removed_again.is_none());
+}
+
+#[tokio::test]
+async fn test_force_exit_check_detects_entities_outside_cell() {
+    use zeus_node::entity_manager::{Entity, AuthorityState, EntityManager};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 24.0, 0.0, 24.0, -12.0, 12.0);
+    let mut em = EntityManager::new_3d(cell.clone(), 1.0);
+
+    em.add_entity(Entity {
+        id: 1, pos: (12.0, 12.0, 0.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    em.add_entity(Entity {
+        id: 2, pos: (20.0, 12.0, 0.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    em.add_entity(Entity {
+        id: 3, pos: (5.0, 20.0, -5.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let exits = em.force_exit_check();
+    assert!(exits.is_empty(), "All entities are inside the full cell");
+
+    em.set_cell(Cell::new(0.0, 12.0, 0.0, 24.0, -12.0, 12.0));
+
+    let exits = em.force_exit_check();
+    assert_eq!(exits.len(), 1, "Entity 2 at x=20 should be outside [0,12]");
+    assert_eq!(exits[0].0, 2);
+}
+
+#[tokio::test]
+async fn test_force_exit_check_after_y_axis_split() {
+    use zeus_node::entity_manager::{Entity, AuthorityState, EntityManager};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 24.0, -1.0, 25.0, -12.0, 12.0);
+    let mut em = EntityManager::new_3d(cell.clone(), 1.0);
+
+    for i in 0..10 {
+        em.add_entity(Entity {
+            id: i + 1, pos: (12.0, i as f32 * 2.5, 0.0), vel: (0.0, 0.0, 0.0),
+            state: AuthorityState::Local, verifying_key: None,
+        });
+    }
+
+    let exits = em.force_exit_check();
+    assert!(exits.is_empty(), "All entities inside original cell");
+
+    em.set_cell(Cell::new(0.0, 24.0, -1.0, 12.0, -12.0, 12.0));
+
+    let exits = em.force_exit_check();
+    let outside_count = exits.len();
+    assert!(outside_count > 0, "Some entities should be above y=12");
+    for (id, _) in &exits {
+        let entity = em.get_entity(*id).unwrap();
+        assert!(entity.pos.1 > 12.0 || entity.pos.1 < -1.0,
+            "Exit entity {} at y={:.1} should be outside [-1,12]", id, entity.pos.1);
+    }
+}
+
+#[tokio::test]
+async fn test_force_exit_check_after_z_axis_split() {
+    use zeus_node::entity_manager::{Entity, AuthorityState, EntityManager};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 24.0, 0.0, 24.0, -12.0, 12.0);
+    let mut em = EntityManager::new_3d(cell.clone(), 1.0);
+
+    em.add_entity(Entity {
+        id: 1, pos: (12.0, 12.0, -8.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    em.add_entity(Entity {
+        id: 2, pos: (12.0, 12.0, 8.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    em.set_cell(Cell::new(0.0, 24.0, 0.0, 24.0, -12.0, 0.0));
+
+    let exits = em.force_exit_check();
+    assert_eq!(exits.len(), 1, "Entity 2 at z=8 is outside [-12, 0]");
+    assert_eq!(exits[0].0, 2);
+}
+
+#[tokio::test]
+async fn test_force_exit_check_ignores_remote_entities() {
+    use zeus_node::entity_manager::{Entity, AuthorityState, EntityManager};
+    use zeus_node::cell::Cell;
+
+    let cell = Cell::new(0.0, 24.0, 0.0, 24.0, -12.0, 12.0);
+    let mut em = EntityManager::new_3d(cell.clone(), 1.0);
+
+    em.add_entity(Entity {
+        id: 1, pos: (30.0, 12.0, 0.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Remote, verifying_key: None,
+    });
+    em.add_entity(Entity {
+        id: 2, pos: (30.0, 12.0, 0.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let exits = em.force_exit_check();
+    assert_eq!(exits.len(), 1, "Only local entities should be checked");
+    assert_eq!(exits[0].0, 2);
+}
+
+#[tokio::test]
+async fn test_cell_shrink_and_flush_consistency() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 24.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(zeus_node::cell::Cell::new(0.0, 24.0, -1.0, 25.0, -12.0, 12.0)),
+    };
+
+    let mut world = TestWorld::new();
+    world.local_ids.insert(1);
+    world.states.insert(1, ((5.0, 5.0, 0.0), (0.0, 0.0, 0.0)));
+    world.local_ids.insert(2);
+    world.states.insert(2, ((5.0, 20.0, 0.0), (0.0, 0.0, 0.0)));
+    world.local_ids.insert(3);
+    world.states.insert(3, ((5.0, 22.0, 0.0), (0.0, 0.0, 0.0)));
+
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    for id in [1u64, 2, 3] {
+        let (pos, vel) = game_loop.world.states[&id];
+        game_loop.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+            id, pos, vel,
+            state: zeus_node::entity_manager::AuthorityState::Local,
+            verifying_key: None,
+        });
+    }
+
+    game_loop.set_cell(zeus_node::cell::Cell::new(0.0, 24.0, -1.0, 12.0, -12.0, 12.0));
+
+    let exits = game_loop.engine.node.manager.force_exit_check();
+    assert!(exits.len() >= 2, "Entities 2 and 3 (y=20,22) should be outside [-1,12]");
+
+    let exit_ids: Vec<u64> = exits.iter().map(|(id, _)| *id).collect();
+    assert!(exit_ids.contains(&2));
+    assert!(exit_ids.contains(&3));
+    assert!(!exit_ids.contains(&1));
 }

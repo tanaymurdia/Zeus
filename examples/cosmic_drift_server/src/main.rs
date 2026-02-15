@@ -4,8 +4,18 @@ use rapier3d::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
+use zeus_node::cell::Cell;
 use zeus_node::engine::ZeusConfig;
 use zeus_node::game_loop::{GameLoop, GameWorld};
+
+fn parse_cell_arg(s: &str) -> Option<Cell> {
+    let parts: Vec<f32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    if parts.len() == 6 {
+        Some(Cell::new(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]))
+    } else {
+        None
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "cosmic_drift_server")]
@@ -42,6 +52,12 @@ enum Commands {
 
         #[arg(long)]
         peers: Option<String>,
+
+        #[arg(long)]
+        cell: Option<String>,
+
+        #[arg(long)]
+        orchestrator: Option<SocketAddr>,
     },
 }
 
@@ -72,42 +88,51 @@ struct PhysicsWorld {
 
 impl PhysicsWorld {
     fn new() -> Self {
+        Self::with_bounds(0.0, 24.0, -12.0, 12.0)
+    }
+
+    fn with_bounds(x_min: f32, x_max: f32, z_min: f32, z_max: f32) -> Self {
         let mut rigid_body_set = RigidBodySet::new();
         let mut collider_set = ColliderSet::new();
 
+        let cx = (x_min + x_max) * 0.5;
+        let cz = (z_min + z_max) * 0.5;
+        let half_x = (x_max - x_min) * 0.5;
+        let half_z = (z_max - z_min) * 0.5;
+
         let ground = RigidBodyBuilder::fixed()
-            .translation(vector![12.0, -1.0, 0.0])
+            .translation(vector![cx, -1.0, cz])
             .build();
         let ground_handle = rigid_body_set.insert(ground);
-        let ground_collider = ColliderBuilder::cuboid(500.0, 0.1, 500.0)
+        let ground_collider = ColliderBuilder::cuboid(half_x + 100.0, 0.1, half_z + 100.0)
             .restitution(0.2)
             .friction(0.0)
             .build();
         collider_set.insert_with_parent(ground_collider, ground_handle, &mut rigid_body_set);
 
         let wall_front = RigidBodyBuilder::fixed()
-            .translation(vector![12.0, 5.0, 14.0])
+            .translation(vector![cx, 5.0, z_max + 2.0])
             .build();
         let wall_back = RigidBodyBuilder::fixed()
-            .translation(vector![12.0, 5.0, -14.0])
+            .translation(vector![cx, 5.0, z_min - 2.0])
             .build();
         let h_front = rigid_body_set.insert(wall_front);
         let h_back = rigid_body_set.insert(wall_back);
 
-        let wall_fb_col = ColliderBuilder::cuboid(500.0, 10.0, 2.0).build();
+        let wall_fb_col = ColliderBuilder::cuboid(half_x + 100.0, 10.0, 2.0).build();
         collider_set.insert_with_parent(wall_fb_col.clone(), h_front, &mut rigid_body_set);
         collider_set.insert_with_parent(wall_fb_col, h_back, &mut rigid_body_set);
 
         let wall_left = RigidBodyBuilder::fixed()
-            .translation(vector![-0.5, 5.0, 0.0])
+            .translation(vector![x_min - 0.5, 5.0, cz])
             .build();
         let wall_right = RigidBodyBuilder::fixed()
-            .translation(vector![24.5, 5.0, 0.0])
+            .translation(vector![x_max + 0.5, 5.0, cz])
             .build();
         let h_left = rigid_body_set.insert(wall_left);
         let h_right = rigid_body_set.insert(wall_right);
 
-        let wall_lr_col = ColliderBuilder::cuboid(0.5, 10.0, 15.0).build();
+        let wall_lr_col = ColliderBuilder::cuboid(0.5, 10.0, half_z + 2.0).build();
         collider_set.insert_with_parent(wall_lr_col.clone(), h_left, &mut rigid_body_set);
         collider_set.insert_with_parent(wall_lr_col, h_right, &mut rigid_body_set);
 
@@ -433,6 +458,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             boundary,
             peer,
             peers,
+            cell,
+            orchestrator: _orchestrator,
         }) => {
             let mut seed_addrs: Vec<SocketAddr> = Vec::new();
             if let Some(peers_str) = peers {
@@ -447,9 +474,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     seed_addrs.push(p);
                 }
             }
-            run_physics_node(bind, id, boundary, seed_addrs, cli.max_balls).await
+            let parsed_cell = cell.and_then(|s| parse_cell_arg(&s));
+            run_physics_node(bind, id, boundary, seed_addrs, cli.max_balls, parsed_cell).await
         }
-        None => run_physics_node(cli.bind, 0, 20.0, Vec::new(), cli.max_balls).await,
+        None => run_physics_node(cli.bind, 0, 20.0, Vec::new(), cli.max_balls, None).await,
     }
 }
 
@@ -569,10 +597,11 @@ async fn run_physics_node(
     boundary: f32,
     seed_addrs: Vec<SocketAddr>,
     _max_balls: usize,
+    cell_override: Option<Cell>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
-        "[Node {}] bind={} boundary={} peers={:?}",
-        id, bind, boundary, seed_addrs
+        "[Node {}] bind={} boundary={} peers={:?} cell={:?}",
+        id, bind, boundary, seed_addrs, cell_override
     );
 
     let config = ZeusConfig {
@@ -582,9 +611,14 @@ async fn run_physics_node(
         margin: 1.0,
         ordinal: id as u32,
         lower_boundary: 0.0,
+        cell: cell_override.clone(),
     };
 
-    let physics = PhysicsWorld::new();
+    let physics = if let Some(ref cell) = cell_override {
+        PhysicsWorld::with_bounds(cell.x_min, cell.x_max, cell.z_min, cell.z_max)
+    } else {
+        PhysicsWorld::new()
+    };
     let mut game_loop = GameLoop::new(config, physics).await?;
 
     let tick_duration = std::time::Duration::from_micros(7812);

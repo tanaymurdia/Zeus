@@ -1,10 +1,10 @@
 [package]
-name = "cosmic_drift_server"
+name = "swarm_arena_server"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "cosmic_drift_server"
+name = "swarm_arena_server"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,3 +17,4 @@ zeus_common = { version = "0.1.0", path = "../../src/zeus_common" }
 zeus_node = { version = "0.1.0", path = "../../src/zeus_node" }
 zeus_transport = { version = "0.1.0", path = "../../src/zeus_transport" }
 zeus_orchestrator = { version = "0.1.0", path = "../../src/zeus_orchestrator" }
+bytes = "1"
