@@ -1,11 +1,12 @@
 use crate::cell::Cell;
 use crate::entity_manager::{AuthorityState, Entity, EntityManager};
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use zeus_common::{HandoffMsg, HandoffType};
 
 pub struct NodeActor {
     pub manager: EntityManager,
-    pub outgoing_messages: VecDeque<(u64, HandoffType)>,
+    pub outgoing_messages: VecDeque<(u64, HandoffType, Option<SocketAddr>)>,
 }
 
 impl NodeActor {
@@ -31,7 +32,7 @@ impl NodeActor {
         self.manager.set_boundary(boundary);
     }
 
-    pub fn handle_handoff_msg(&mut self, msg: HandoffMsg) {
+    pub fn handle_handoff_msg(&mut self, msg: HandoffMsg, source: Option<SocketAddr>) {
         let id = msg.entity_id();
         let (current_state, known_key) = if let Some(e) = self.manager.get_entity(id) {
             (Some(e.state.clone()), e.verifying_key)
@@ -43,6 +44,11 @@ impl NodeActor {
             HandoffType::Offer => {
                 let is_new = self.manager.get_entity(id).is_none();
                 let is_local = matches!(current_state, Some(AuthorityState::Local));
+                let is_handoff_in = matches!(current_state, Some(AuthorityState::HandoffIn));
+
+                if is_handoff_in {
+                    return;
+                }
 
                 if let Some(ghost) = msg.state() {
                     if let Some(key) = known_key {
@@ -84,7 +90,7 @@ impl NodeActor {
                         };
                         self.manager.add_entity(entity);
                         if is_new || was_remote {
-                            self.outgoing_messages.push_back((id, HandoffType::Ack));
+                            self.outgoing_messages.push_back((id, HandoffType::Ack, None));
                         }
                     }
                 } else {
@@ -94,7 +100,7 @@ impl NodeActor {
             HandoffType::Ack => {
                 if let Some(AuthorityState::HandoffOut) = current_state {
                     self.manager.set_state(id, AuthorityState::Remote);
-                    self.outgoing_messages.push_back((id, HandoffType::Commit));
+                    self.outgoing_messages.push_back((id, HandoffType::Commit, source));
                 }
             }
             HandoffType::Commit => {
@@ -167,7 +173,7 @@ mod tests {
         let buf = builder.finished_data();
         let msg = zeus_common::flatbuffers::root::<HandoffMsg>(buf).unwrap();
 
-        node.handle_handoff_msg(msg);
+        node.handle_handoff_msg(msg, None);
         let e = node.manager.get_entity(99).unwrap();
         assert_eq!(e.state, AuthorityState::HandoffIn);
         node.outgoing_messages.clear();
@@ -184,7 +190,7 @@ mod tests {
         let buf = builder.finished_data();
         let msg = zeus_common::flatbuffers::root::<HandoffMsg>(buf).unwrap();
 
-        node.handle_handoff_msg(msg);
+        node.handle_handoff_msg(msg, None);
         let e = node.manager.get_entity(99).unwrap();
         assert_eq!(e.state, AuthorityState::Local);
     }

@@ -65,19 +65,10 @@ impl<W: GameWorld> GameLoop<W> {
 
         self.world.step(dt);
 
-        let mut evicted = Vec::new();
         for id in &local_ids {
             if let Some((pos, vel)) = self.world.get_entity_state(*id) {
-                if my_cell.contains(pos) {
-                    self.engine.update_entity(*id, pos, vel);
-                } else {
-                    self.engine.update_entity(*id, pos, vel);
-                    evicted.push(*id);
-                }
+                self.engine.update_entity(*id, pos, vel);
             }
-        }
-        for id in &evicted {
-            self.world.on_entity_departed(*id);
         }
 
         self.broadcast_counter += 1;

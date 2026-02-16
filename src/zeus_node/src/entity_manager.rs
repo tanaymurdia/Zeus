@@ -67,15 +67,11 @@ impl EntityManager {
         self.entities.len()
     }
 
-    pub fn update(&mut self, dt: f32) -> Vec<(u64, Face)> {
+    pub fn update(&mut self, _dt: f32) -> Vec<(u64, Face)> {
         let mut handoff_candidates = Vec::new();
 
-        for entity in self.entities.values_mut() {
+        for entity in self.entities.values() {
             if entity.state == AuthorityState::Local {
-                entity.pos.0 += entity.vel.0 * dt;
-                entity.pos.1 += entity.vel.1 * dt;
-                entity.pos.2 += entity.vel.2 * dt;
-
                 if let Some(face) = self.cell.exit_face(entity.pos, self.margin) {
                     handoff_candidates.push((entity.id, face));
                 }
@@ -165,9 +161,9 @@ mod tests {
         });
 
         let candidates = mgr.update(1.0);
-        assert!(candidates.is_empty());
-        assert_eq!(mgr.get_entity(1).unwrap().pos.0, 5.0);
+        assert!(candidates.is_empty(), "Entity inside boundary+margin should not be a candidate");
 
+        mgr.get_entity_mut(1).unwrap().pos.0 = 5.5;
         let candidates = mgr.update(0.1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].0, 1);
@@ -179,7 +175,7 @@ mod tests {
         let mut mgr = EntityManager::new(10.0, 5.0, 0.0);
         mgr.add_entity(Entity {
             id: 1,
-            pos: (14.0, 0.0, 0.0),
+            pos: (16.0, 0.0, 0.0),
             vel: (2.0, 0.0, 0.0),
             state: AuthorityState::Local,
             verifying_key: None,
@@ -195,7 +191,7 @@ mod tests {
         let mut mgr = EntityManager::new(20.0, 5.0, 8.0);
         mgr.add_entity(Entity {
             id: 2,
-            pos: (3.0, 0.0, 0.0),
+            pos: (2.0, 0.0, 0.0),
             vel: (-1.0, 0.0, 0.0),
             state: AuthorityState::Local,
             verifying_key: None,
@@ -240,7 +236,7 @@ mod tests {
         let mut mgr = EntityManager::new_3d(Cell::new(0.0, 10.0, 0.0, 10.0, 0.0, 10.0), 1.0);
         mgr.add_entity(Entity {
             id: 1,
-            pos: (5.0, 10.5, 5.0),
+            pos: (5.0, 11.5, 5.0),
             vel: (0.0, 2.0, 0.0),
             state: AuthorityState::Local,
             verifying_key: None,
@@ -255,7 +251,7 @@ mod tests {
         let mut mgr = EntityManager::new_3d(Cell::new(0.0, 10.0, 0.0, 10.0, 0.0, 10.0), 1.0);
         mgr.add_entity(Entity {
             id: 1,
-            pos: (5.0, -0.5, 5.0),
+            pos: (5.0, -1.5, 5.0),
             vel: (0.0, -2.0, 0.0),
             state: AuthorityState::Local,
             verifying_key: None,
@@ -270,7 +266,7 @@ mod tests {
         let mut mgr = EntityManager::new_3d(Cell::new(0.0, 10.0, 0.0, 10.0, 0.0, 10.0), 1.0);
         mgr.add_entity(Entity {
             id: 1,
-            pos: (5.0, 5.0, 10.5),
+            pos: (5.0, 5.0, 11.5),
             vel: (0.0, 0.0, 2.0),
             state: AuthorityState::Local,
             verifying_key: None,
@@ -285,7 +281,7 @@ mod tests {
         let mut mgr = EntityManager::new_3d(Cell::new(0.0, 10.0, 0.0, 10.0, 0.0, 10.0), 1.0);
         mgr.add_entity(Entity {
             id: 1,
-            pos: (5.0, 5.0, -0.5),
+            pos: (5.0, 5.0, -1.5),
             vel: (0.0, 0.0, -2.0),
             state: AuthorityState::Local,
             verifying_key: None,

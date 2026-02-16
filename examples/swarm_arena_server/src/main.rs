@@ -130,6 +130,12 @@ impl DroneWorld {
 
     #[allow(dead_code)]
     fn spawn_drone(&mut self) -> Option<u64> {
+        while self.drones.contains_key(&self.next_drone_id) || self.next_drone_id >= 999_000 {
+            self.next_drone_id += 1;
+            if self.next_drone_id >= 999_000 {
+                return None;
+            }
+        }
         let id = self.next_drone_id;
         self.next_drone_id += 1;
 
@@ -379,6 +385,9 @@ impl DroneWorld {
     fn spawn_drone_near(&mut self, center: (f32, f32, f32), count: usize) -> Vec<u64> {
         let mut spawned = Vec::new();
         for i in 0..count {
+            while self.drones.contains_key(&self.next_drone_id) {
+                self.next_drone_id += 1;
+            }
             let id = self.next_drone_id;
             self.next_drone_id += 1;
             let hash = id.wrapping_mul(2654435761);
@@ -696,11 +705,12 @@ async fn run_node(
         cell: Some(initial_cell.clone()),
     };
 
-    let physics = DroneWorld::with_bounds(
+    let mut physics = DroneWorld::with_bounds(
         initial_cell.x_min, initial_cell.x_max,
         initial_cell.y_min, initial_cell.y_max,
         initial_cell.z_min, initial_cell.z_max,
     );
+    physics.next_drone_id = (id as u64) * 50_000 + 1;
 
     let mut game_loop = GameLoop::new(config, physics).await?;
     let mut autoscaler = AutoScaler::new(AutoScaleConfig {
@@ -720,6 +730,8 @@ async fn run_node(
     let mut cell_broadcast_counter: u32 = 0;
     let mut my_cell = initial_cell;
     let mut pending_split: Option<(Cell, Cell)> = None;
+    let mut split_debug_ticks: i32 = -1;
+    let mut tracked_ids: Vec<u64> = Vec::new();
 
     loop {
         let loop_start = std::time::Instant::now();
@@ -804,55 +816,99 @@ async fn run_node(
         for se in &scale_events {
             match se {
                 ScaleEvent::WarmupRecommended { projected_cell, projected_new_cell, .. } => {
-                    if pending_split.is_none() {
-                        pending_split = Some((projected_cell.clone(), projected_new_cell.clone()));
-                        println!(
-                            "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
-                            projected_new_cell.x_min, projected_new_cell.x_max,
-                            projected_new_cell.y_min, projected_new_cell.y_max,
-                            projected_new_cell.z_min, projected_new_cell.z_max,
-                        );
-                    }
+                    pending_split = Some((projected_cell.clone(), projected_new_cell.clone()));
+                    println!(
+                        "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
+                        projected_new_cell.x_min, projected_new_cell.x_max,
+                        projected_new_cell.y_min, projected_new_cell.y_max,
+                        projected_new_cell.z_min, projected_new_cell.z_max,
+                    );
                 }
                 ScaleEvent::SplitRecommended { keep_cell, new_cell, .. } => {
-                    if pending_split.is_some() {
-                        pending_split = Some((keep_cell.clone(), new_cell.clone()));
-                    } else {
-                        pending_split = Some((keep_cell.clone(), new_cell.clone()));
-                        println!(
-                            "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
-                            new_cell.x_min, new_cell.x_max,
-                            new_cell.y_min, new_cell.y_max,
-                            new_cell.z_min, new_cell.z_max,
-                        );
-                    }
+                    pending_split = Some((keep_cell.clone(), new_cell.clone()));
+                    println!(
+                        "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
+                        new_cell.x_min, new_cell.x_max,
+                        new_cell.y_min, new_cell.y_max,
+                        new_cell.z_min, new_cell.z_max,
+                    );
                 }
                 ScaleEvent::MergeRecommended => {
                     println!("REQUEST_MERGE");
                 }
                 ScaleEvent::CellExpanded { new_cell } => {
-                    my_cell = new_cell.clone();
-                    game_loop.set_cell(my_cell.clone());
+                    let alive_peer_cells = game_loop.engine.discovery.peer_cells();
+                    let overlaps = alive_peer_cells.values().any(|pc| {
+                        new_cell.x_min < pc.x_max && new_cell.x_max > pc.x_min
+                            && new_cell.y_min < pc.y_max && new_cell.y_max > pc.y_min
+                            && new_cell.z_min < pc.z_max && new_cell.z_max > pc.z_min
+                    });
+                    if overlaps {
+                        eprintln!(
+                            "[Node {}] CellExpanded REJECTED (would overlap with alive peers): {:?}",
+                            id, new_cell
+                        );
+                    } else {
+                        my_cell = new_cell.clone();
+                        game_loop.set_cell(my_cell.clone());
                     game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
                     game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
                     eprintln!("[Node {}] Cell expanded to {:?}", id, my_cell);
+                    }
                 }
                 ScaleEvent::PeerJoined { id: pid } => {
                     eprintln!("[Node {}] Peer {} joined", id, pid);
-                    if let Some((keep_cell, _new_cell)) = pending_split.take() {
+                    if let Some((keep_cell, new_cell)) = pending_split.take() {
+                        let peer_cells = game_loop.engine.discovery.peer_cells();
+                        let peer_cell = peer_cells.get(&pid);
+                        let cell_matches = peer_cell.map_or(false, |pc| {
+                            (pc.x_min - new_cell.x_min).abs() < 1.0
+                            && (pc.x_max - new_cell.x_max).abs() < 1.0
+                            && (pc.y_min - new_cell.y_min).abs() < 1.0
+                            && (pc.y_max - new_cell.y_max).abs() < 1.0
+                            && (pc.z_min - new_cell.z_min).abs() < 1.0
+                            && (pc.z_max - new_cell.z_max).abs() < 1.0
+                        });
+                        if !cell_matches {
+                            eprintln!(
+                                "[Node {}] Peer {} cell {:?} doesn't match expected {:?}, re-queuing split",
+                                id, pid, peer_cell, new_cell
+                            );
+                            pending_split = Some((keep_cell, new_cell));
+                        } else {
+                        let pre_local: Vec<_> = game_loop.engine.node.manager.entities.iter()
+                            .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::Local)
+                            .map(|(eid, e)| (*eid, e.pos, e.vel))
+                            .collect();
+                        eprintln!("[Node {}] PRE-EVICT local={} sample:", id, pre_local.len());
+                        for (eid, p, v) in pre_local.iter().take(5) {
+                            eprintln!("  id={} pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})", eid, p.0, p.1, p.2, v.0, v.1, v.2);
+                        }
                         my_cell = keep_cell;
                         game_loop.set_cell(my_cell.clone());
                         game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
                         game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
                         game_loop.evict_out_of_cell_from_physics();
+                        let post_states: Vec<_> = game_loop.engine.node.manager.entities.iter()
+                            .map(|(eid, e)| (*eid, e.state.clone(), e.pos, e.vel))
+                            .collect();
+                        let ho_count = post_states.iter().filter(|(_, s, _, _)| *s == zeus_node::entity_manager::AuthorityState::HandoffOut).count();
+                        let lo_count = post_states.iter().filter(|(_, s, _, _)| *s == zeus_node::entity_manager::AuthorityState::Local).count();
+                        eprintln!("[Node {}] POST-EVICT local={} handoffout={} total={}", id, lo_count, ho_count, post_states.len());
+                        tracked_ids = post_states.iter()
+                            .filter(|(_, s, _, _)| *s == zeus_node::entity_manager::AuthorityState::HandoffOut)
+                            .take(3)
+                            .map(|(eid, _, _, _)| *eid)
+                            .collect();
+                        eprintln!("[Node {}] TRACKING IDs: {:?}", id, tracked_ids);
+                        for (eid, st, p, v) in post_states.iter().filter(|(eid, _, _, _)| tracked_ids.contains(eid)) {
+                            eprintln!("  id={} state={:?} pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})", eid, st, p.0, p.1, p.2, v.0, v.1, v.2);
+                        }
                         eprintln!("[Node {}] Cell shrunk to {:?} (peer {} ready)", id, my_cell, pid);
-                    }
-                    let mut all_cells = vec![my_cell.clone()];
-                    for (_, cell) in game_loop.engine.discovery.peer_cells() {
-                        all_cells.push(cell);
-                    }
-                    game_loop.broadcast_cells(&all_cells);
-                    game_loop.broadcast_status();
+                        split_debug_ticks = 0;
+                        game_loop.broadcast_status();
+                        game_loop.broadcast_cells(&[my_cell.clone()]);
+                    }}
                 }
                 ScaleEvent::PeerLeft { id: pid, .. } => {
                     eprintln!("[Node {}] Peer {} left", id, pid);
@@ -860,13 +916,55 @@ async fn run_node(
             }
         }
 
+        if split_debug_ticks >= 0 && split_debug_ticks < 128 {
+            if split_debug_ticks % 4 == 0 {
+                let em = &game_loop.engine.node.manager;
+                let lo = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local).count();
+                let ho = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut).count();
+                let rd = game_loop.engine.recently_departed.len();
+                eprintln!(
+                    "[Node {}] T+{}: L={} HO={} dep={}",
+                    id, split_debug_ticks, lo, ho, rd
+                );
+                for tid in &tracked_ids {
+                    let in_em = em.entities.get(tid);
+                    let in_dep = game_loop.engine.recently_departed.get(tid);
+                    let in_remote = game_loop.engine.remote_entity_states.get(tid);
+                    if let Some(e) = in_em {
+                        eprintln!(
+                            "  [SWARM] id={} src=EM({:?}) pos=({:.3},{:.3},{:.3}) vel=({:.3},{:.3},{:.3})",
+                            tid, e.state, e.pos.0, e.pos.1, e.pos.2, e.vel.0, e.vel.1, e.vel.2
+                        );
+                    }
+                    if let Some((pos, vel, ticks)) = in_dep {
+                        let dt = 1.0_f32 / 128.0;
+                        let ep = (
+                            pos.0 + vel.0 * (*ticks as f32) * dt,
+                            pos.1 + vel.1 * (*ticks as f32) * dt,
+                            pos.2 + vel.2 * (*ticks as f32) * dt,
+                        );
+                        eprintln!(
+                            "  [SWARM] id={} src=RELAY(t={}) base=({:.3},{:.3},{:.3}) broadcast=({:.3},{:.3},{:.3})",
+                            tid, ticks, pos.0, pos.1, pos.2, ep.0, ep.1, ep.2
+                        );
+                    }
+                    if let Some(rs) = in_remote {
+                        eprintln!(
+                            "  [SWARM] id={} src=GOSSIP pos=({:.3},{:.3},{:.3}) vel=({:.3},{:.3},{:.3})",
+                            tid, rs.pos.0, rs.pos.1, rs.pos.2, rs.vel.0, rs.vel.1, rs.vel.2
+                        );
+                    }
+                    if in_em.is_none() && in_dep.is_none() && in_remote.is_none() {
+                        eprintln!("  [SWARM] id={} NOWHERE", tid);
+                    }
+                }
+            }
+            split_debug_ticks += 1;
+        }
+
         cell_broadcast_counter += 1;
         if cell_broadcast_counter % 16 == 0 {
-            let mut all_cells = vec![my_cell.clone()];
-            for (_, cell) in game_loop.engine.discovery.peer_cells() {
-                all_cells.push(cell);
-            }
-            game_loop.broadcast_cells(&all_cells);
+            game_loop.broadcast_cells(&[my_cell.clone()]);
         }
 
         status_counter += 1;

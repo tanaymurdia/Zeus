@@ -356,6 +356,19 @@ fn setup_network(
                                                             } else {
                                                                 (0.0, 0.0, 0.0)
                                                             };
+                                                            if let Some(&((ox, oy, oz), _, ref old_t)) = map.get(&id) {
+                                                                let dx = px - ox;
+                                                                let dy = py - oy;
+                                                                let dz = pz - oz;
+                                                                let dist = (dx*dx + dy*dy + dz*dz).sqrt();
+                                                                let dt_ms = now.duration_since(*old_t).as_millis();
+                                                                if dist > 1.0 && dt_ms < 200 && id < 1_000_000 {
+                                                                    eprintln!(
+                                                                        "[CLIENT JUMP] port={} id={} dist={:.2} dt={}ms old=({:.2},{:.2},{:.2}) new=({:.2},{:.2},{:.2})",
+                                                                        port, id, dist, dt_ms, ox, oy, oz, px, py, pz
+                                                                    );
+                                                                }
+                                                            }
                                                             map.insert(id, ((px, py, pz), (vx, vy, vz), now));
                                                         }
                                                     }
@@ -395,12 +408,9 @@ fn setup_network(
                                                     }
                                                     if let Ok(mut pp) = octree_per_port.lock() {
                                                         pp.insert(port, new_cells);
-                                                        let best = pp.values()
-                                                            .max_by_key(|v| v.len())
-                                                            .cloned()
-                                                            .unwrap_or_default();
+                                                        let merged: Vec<CellBounds> = pp.values().flatten().cloned().collect();
                                                         if let Ok(mut c) = octree_cells_shared.lock() {
-                                                            *c = best;
+                                                            *c = merged;
                                                         }
                                                     }
                                                 }
@@ -431,7 +441,7 @@ fn setup_network(
     rt_handle.spawn(async move {
         let mut last_count = 1u8;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let current = node_count_poll.load(Ordering::Relaxed);
             if current > last_count {
                 for i in last_count..current {

@@ -147,7 +147,8 @@ async fn run_mesh(
                 NetworkEvent::Payload(conn, bytes, is_stream) => {
                     if is_stream {
                         if let Ok(msg) = zeus_common::flatbuffers::root::<HandoffMsg>(&bytes) {
-                            node.handle_handoff_msg(msg);
+                            let src = conn.remote_address();
+                            node.handle_handoff_msg(msg, Some(src));
                         }
                     } else {
                         if let Ok(msg) =
@@ -161,12 +162,21 @@ async fn run_mesh(
             }
         }
 
-        while let Some((id, msg_type)) = node.outgoing_messages.pop_front() {
+        while let Some((id, msg_type, target_addr)) = node.outgoing_messages.pop_front() {
             let msg_bytes = build_handoff_msg(id, msg_type, &node);
-            for conn in &connections {
-                if let Ok(mut stream) = conn.open_uni().await {
-                    let _ = stream.write_all(&msg_bytes).await;
-                    let _ = stream.finish();
+            if let Some(addr) = target_addr {
+                if let Some(conn) = connections.iter().find(|c| c.remote_address() == addr) {
+                    if let Ok(mut stream) = conn.open_uni().await {
+                        let _ = stream.write_all(&msg_bytes).await;
+                        let _ = stream.finish();
+                    }
+                }
+            } else {
+                for conn in &connections {
+                    if let Ok(mut stream) = conn.open_uni().await {
+                        let _ = stream.write_all(&msg_bytes).await;
+                        let _ = stream.finish();
+                    }
                 }
             }
         }
@@ -229,7 +239,7 @@ async fn run_source(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> 
                 println!("[Source] Entity 1: Pos={:.1}, State={:?}", e.pos.0, e.state);
             }
 
-            while let Some((id, msg_type)) = node.outgoing_messages.pop_front() {
+            while let Some((id, msg_type, _target)) = node.outgoing_messages.pop_front() {
                 let msg_bytes = build_handoff_msg(id, msg_type, &node);
                 let mut send_stream = connection.open_uni().await?;
                 send_stream.write_all(&msg_bytes).await?;
@@ -246,7 +256,8 @@ async fn run_source(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> 
                            match recv.read_to_end(64 * 1024).await {
                                Ok(buf) => {
                                    if let Ok(msg) = zeus_common::flatbuffers::root::<HandoffMsg>(&buf) {
-                                       node.handle_handoff_msg(msg);
+                                       let src = connection.remote_address();
+                                       node.handle_handoff_msg(msg, Some(src));
                                    }
                                }
                                Err(e) => eprintln!("[Source] Read error: {}", e),
@@ -284,7 +295,7 @@ async fn run_target(bind: SocketAddr, peer: SocketAddr) -> Result<(), Box<dyn st
             println!("[Target] Entity 1: Pos={:.1}, State={:?}", e.pos.0, e.state);
         }
 
-        while let Some((id, msg_type)) = node.outgoing_messages.pop_front() {
+        while let Some((id, msg_type, _target)) = node.outgoing_messages.pop_front() {
             let msg_bytes = build_handoff_msg(id, msg_type, &node);
             let mut send_stream = connection.open_uni().await?;
             send_stream.write_all(&msg_bytes).await?;
@@ -301,7 +312,8 @@ async fn run_target(bind: SocketAddr, peer: SocketAddr) -> Result<(), Box<dyn st
                        match recv.read_to_end(64 * 1024).await {
                            Ok(buf) => {
                                if let Ok(msg) = zeus_common::flatbuffers::root::<HandoffMsg>(&buf) {
-                                   node.handle_handoff_msg(msg);
+                                   let src = connection.remote_address();
+                                   node.handle_handoff_msg(msg, Some(src));
                                }
                            }
                            Err(e) => eprintln!("[Target] Read error: {}", e),

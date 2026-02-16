@@ -64,10 +64,11 @@ fn test_hysteresis_jitter() {
     });
 
     let candidates = mgr.update(1.0);
-    assert!(candidates.is_empty(), "Should not trigger at exactly 5.0");
+    assert!(candidates.is_empty(), "Should not trigger at 4.9 (inside boundary+margin)");
 
+    mgr.get_entity_mut(10).unwrap().pos = (5.5, 0.0, 0.0);
     let candidates = mgr.update(1.0);
-    assert!(candidates.iter().any(|(id, _)| *id == 10), "Should trigger above 5.0");
+    assert!(candidates.iter().any(|(id, _)| *id == 10), "Should trigger above boundary+margin");
 
     mgr.set_state(10, AuthorityState::Local);
     let e = mgr.get_entity_mut(10).unwrap();
@@ -94,19 +95,22 @@ fn test_state_machine_duplicate_ack() {
 
     let ack_bytes = create_test_msg(100, HandoffType::Ack, 0.0, None);
     let ack_msg = zeus_common::flatbuffers::root::<HandoffMsg>(&ack_bytes).unwrap();
-    node.handle_handoff_msg(ack_msg);
+    let fake_addr: std::net::SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    node.handle_handoff_msg(ack_msg, Some(fake_addr));
 
     assert_eq!(
         node.manager.get_entity(100).unwrap().state,
         AuthorityState::Remote
     );
     assert_eq!(node.outgoing_messages.len(), 1);
-    assert_eq!(node.outgoing_messages[0], (100, HandoffType::Commit));
+    assert_eq!(node.outgoing_messages[0].0, 100);
+    assert_eq!(node.outgoing_messages[0].1, HandoffType::Commit);
+    assert_eq!(node.outgoing_messages[0].2, Some(fake_addr));
     node.outgoing_messages.clear();
 
     let ack_bytes_2 = create_test_msg(100, HandoffType::Ack, 0.0, None);
     let ack_msg_2 = zeus_common::flatbuffers::root::<HandoffMsg>(&ack_bytes_2).unwrap();
-    node.handle_handoff_msg(ack_msg_2);
+    node.handle_handoff_msg(ack_msg_2, Some(fake_addr));
 
     assert_eq!(
         node.manager.get_entity(100).unwrap().state,
@@ -129,7 +133,7 @@ fn test_state_machine_out_of_order() {
 
     let offer_bytes = create_test_msg(200, HandoffType::Offer, 10.0, None);
     let offer_msg = zeus_common::flatbuffers::root::<HandoffMsg>(&offer_bytes).unwrap();
-    node.handle_handoff_msg(offer_msg);
+    node.handle_handoff_msg(offer_msg, None);
 
     assert_eq!(
         node.manager.get_entity(200).unwrap().state,
@@ -156,7 +160,7 @@ fn test_security_rejects_unsigned_offer() {
         verifying_key: Some(check_key),
     });
 
-    node.handle_handoff_msg(valid_msg);
+    node.handle_handoff_msg(valid_msg, None);
 
     assert_eq!(
         node.manager.get_entity(300).unwrap().state,
@@ -173,7 +177,7 @@ fn test_security_rejects_unsigned_offer() {
     });
 
     let forged_msg = zeus_common::flatbuffers::root::<HandoffMsg>(&forged_bytes).unwrap();
-    node.handle_handoff_msg(forged_msg);
+    node.handle_handoff_msg(forged_msg, None);
 
     assert_eq!(
         node.manager.get_entity(301).unwrap().state,

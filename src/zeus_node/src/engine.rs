@@ -66,6 +66,7 @@ pub struct ZeusEngine {
     heartbeat_counter: u32,
     tick_counter: u32,
     pub handoff_retry_counter: u32,
+    pub recently_departed: HashMap<u64, ((f32, f32, f32), (f32, f32, f32), u32)>,
 }
 
 impl ZeusEngine {
@@ -139,6 +140,7 @@ impl ZeusEngine {
             heartbeat_counter: 0,
             tick_counter: 0,
             handoff_retry_counter: 0,
+            recently_departed: HashMap::new(),
         })
     }
 
@@ -168,7 +170,24 @@ impl ZeusEngine {
     }
 
     pub fn set_cell(&mut self, cell: Cell) {
-        self.node.manager.set_cell(cell);
+        self.node.manager.set_cell(cell.clone());
+        self.broadcast_cell_to_peers(&cell);
+    }
+
+    fn build_cell_datagram(&self, cell: &Cell) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(33);
+        buf.push(0xD6);
+        buf.extend_from_slice(&self.discovery.local_id.to_le_bytes());
+        buf.extend_from_slice(&cell.serialize());
+        buf
+    }
+
+    fn broadcast_cell_to_peers(&self, cell: &Cell) {
+        let datagram = self.build_cell_datagram(cell);
+        let payload: bytes::Bytes = datagram.into();
+        for conn in &self.peer_connections {
+            let _ = conn.send_datagram(payload.clone());
+        }
     }
 
     pub fn find_target_connection_pub(&self, entity_id: u64) -> Option<&quinn::Connection> {
@@ -221,20 +240,30 @@ impl ZeusEngine {
         let mut exit_candidates = self.node.update(dt);
         self.handoff_retry_counter += 1;
         let my_cell = self.node.manager.cell().clone();
-        if self.handoff_retry_counter % 128 == 0 && !self.peer_connections.is_empty() {
+        if self.handoff_retry_counter % 8 == 0 && !self.peer_connections.is_empty() {
             let stuck: Vec<u64> = self.node.manager.entities.iter()
                 .filter(|(_, e)| e.state == AuthorityState::HandoffOut && !my_cell.contains(e.pos))
                 .map(|(id, _)| *id)
                 .collect();
             for id in &stuck {
                 let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
-                for conn in &self.peer_connections {
+                if let Some(conn) = self.find_target_connection(*id) {
                     let timeout_dur = std::time::Duration::from_millis(10);
                     if let Ok(Ok(mut stream)) =
                         tokio::time::timeout(timeout_dur, conn.open_uni()).await
                     {
                         let _ = stream.write_all(&msg_bytes).await;
                         let _ = stream.finish();
+                    }
+                } else {
+                    for conn in &self.peer_connections {
+                        let timeout_dur = std::time::Duration::from_millis(10);
+                        if let Ok(Ok(mut stream)) =
+                            tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                        {
+                            let _ = stream.write_all(&msg_bytes).await;
+                            let _ = stream.finish();
+                        }
                     }
                 }
             }
@@ -270,6 +299,9 @@ impl ZeusEngine {
                     let is_peer = self.known_peer_addrs.contains(&remote);
                     if is_peer {
                         self.peer_connections.push(conn.clone());
+                        let cell = self.node.manager.cell().clone();
+                        let cell_dg = self.build_cell_datagram(&cell);
+                        let _ = conn.send_datagram(cell_dg.into());
                     } else {
                         self.client_connections.push(conn.clone());
                         self.last_broadcast_state.clear();
@@ -313,7 +345,8 @@ impl ZeusEngine {
                             let old_state =
                                 self.node.manager.get_entity(id).map(|e| e.state.clone());
 
-                            self.node.handle_handoff_msg(msg);
+                            let source_addr = conn.remote_address();
+                            self.node.handle_handoff_msg(msg, Some(source_addr));
 
                             let is_from_peer = self.peer_connections.iter().any(|pc| pc.remote_address() == conn.remote_address());
                             if !is_from_peer {
@@ -341,6 +374,9 @@ impl ZeusEngine {
                                 } else if old_state == Some(AuthorityState::HandoffOut)
                                     && new_st == AuthorityState::Remote
                                 {
+                                    if let Some(e) = self.node.manager.get_entity(id) {
+                                        self.recently_departed.insert(id, (e.pos, e.vel, 0));
+                                    }
                                     app_events.push(ZeusEvent::EntityDeparted { id });
                                 } else if new_st == AuthorityState::Local {
                                     if let Some(e) = self.node.manager.get_entity(id) {
@@ -366,6 +402,9 @@ impl ZeusEngine {
                                     if already_connected {
                                         if let Some(c) = self.connections.iter().find(|c| c.remote_address() == remote_addr) {
                                             self.peer_connections.push(c.clone());
+                                            let cell = self.node.manager.cell().clone();
+                                            let cell_dg = self.build_cell_datagram(&cell);
+                                            let _ = c.send_datagram(cell_dg.into());
                                         }
                                     }
                                 }
@@ -418,6 +457,30 @@ impl ZeusEngine {
                                         continue;
                                     }
                                     self.remote_entity_states.insert(id, RemoteEntityState { pos: (px, py, pz), vel: (vx, vy, vz), last_seen: now });
+                                    self.recently_departed.remove(&id);
+                                }
+                            }
+                        } else if bytes.len() == 33 && bytes[0] == 0xD6 {
+                            let node_id = u64::from_le_bytes(bytes[1..9].try_into().unwrap_or_default());
+                            if let Some(cell) = Cell::deserialize(&bytes[9..33]) {
+                                if self.discovery.peers.contains_key(&node_id) {
+                                    self.discovery.update_peer_cell(node_id, cell);
+                                } else {
+                                    let remote_addr = conn.remote_address();
+                                    if let Some(peer) = self.discovery.peers.values_mut().find(|p| p.addr == remote_addr) {
+                                        peer.cell = Some(cell.clone());
+                                    } else {
+                                        self.discovery.peers.insert(node_id, crate::discovery::Peer {
+                                            id: node_id,
+                                            addr: conn.remote_address(),
+                                            pos: (0.0, 0.0, 0.0),
+                                            load: None,
+                                            last_seen: std::time::Instant::now(),
+                                            ordinal: 0,
+                                            cell: Some(cell),
+                                        });
+                                        self.discovery.known_node_ids.insert(node_id);
+                                    }
                                 }
                             }
                         } else if bytes.len() == 41 && bytes[0] == 0xCF {
@@ -483,15 +546,27 @@ impl ZeusEngine {
         }
 
         let messages: Vec<_> = self.node.outgoing_messages.drain(..).collect();
-        for (id, msg_type) in messages {
+        for (id, msg_type, target_addr) in messages {
             let msg_bytes = build_handoff_msg(id, msg_type, &self.node);
-            for conn in &self.peer_connections {
-                let timeout_dur = std::time::Duration::from_millis(2);
-                if let Ok(Ok(mut stream)) =
-                    tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                {
-                    let _ = stream.write_all(&msg_bytes).await;
-                    let _ = stream.finish();
+            if let Some(addr) = target_addr {
+                if let Some(conn) = self.peer_connections.iter().find(|c| c.remote_address() == addr) {
+                    let timeout_dur = std::time::Duration::from_millis(2);
+                    if let Ok(Ok(mut stream)) =
+                        tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                    {
+                        let _ = stream.write_all(&msg_bytes).await;
+                        let _ = stream.finish();
+                    }
+                }
+            } else {
+                for conn in &self.peer_connections {
+                    let timeout_dur = std::time::Duration::from_millis(2);
+                    if let Ok(Ok(mut stream)) =
+                        tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                    {
+                        let _ = stream.write_all(&msg_bytes).await;
+                        let _ = stream.finish();
+                    }
                 }
             }
         }
@@ -502,12 +577,7 @@ impl ZeusEngine {
                 .map(|(id, _)| *id)
                 .collect();
             for id in handoff_in_stuck {
-                if let Some(e) = self.node.manager.get_entity(id) {
-                    let pos = e.pos;
-                    let vel = e.vel;
-                    self.node.manager.set_state(id, AuthorityState::Local);
-                    app_events.push(ZeusEvent::EntityArrived { id, pos, vel });
-                }
+                self.node.manager.remove_entity(id);
             }
         }
 
@@ -546,16 +616,31 @@ impl ZeusEngine {
         for e in self.node.manager.entities.values() {
             let dominated = e.state == crate::entity_manager::AuthorityState::Local && cell.contains(e.pos);
             let in_transit = e.state == crate::entity_manager::AuthorityState::HandoffOut;
-            let recently_departed = e.state == crate::entity_manager::AuthorityState::Remote;
-            if dominated || in_transit || recently_departed {
+            let arriving = e.state == crate::entity_manager::AuthorityState::HandoffIn;
+            if dominated || in_transit || arriving {
                 current_ids.insert(e.id);
                 let near_boundary = dominated && cell.near_any_face(e.pos, overlap_margin);
                 let qp = (quantize_pos(e.pos.0), quantize_pos(e.pos.1), quantize_pos(e.pos.2));
-                if force_full || in_transit || recently_departed || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
+                if force_full || in_transit || arriving || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
                     self.last_broadcast_state.insert(e.id, qp);
                     all_entries.push(BroadcastEntry { id: e.id, pos: e.pos, vel: e.vel });
                 }
             }
+        }
+
+        let mut expired_departed = Vec::new();
+        for (id, (_pos, _vel, ticks)) in &mut self.recently_departed {
+            if current_ids.contains(id) {
+                expired_departed.push(*id);
+            } else {
+                *ticks += 1;
+                if *ticks >= 16 {
+                    expired_departed.push(*id);
+                }
+            }
+        }
+        for id in expired_departed {
+            self.recently_departed.remove(&id);
         }
 
         self.last_broadcast_state.retain(|id, _| current_ids.contains(id));
