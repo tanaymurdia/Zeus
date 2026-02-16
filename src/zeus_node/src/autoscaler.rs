@@ -107,7 +107,7 @@ impl AutoScaler {
             || self.tick_counter.saturating_sub(self.last_split_tick)
                 >= self.config.split_cooldown_ticks;
 
-        if split_cooldown_ok {
+        if split_cooldown_ok && self.last_split_tick > 0 {
             self.warmup_emitted = false;
         }
 
@@ -124,6 +124,20 @@ impl AutoScaler {
                 split_pos: pos,
             });
             self.warmup_emitted = true;
+        }
+
+        if local_entity_count >= self.config.split_threshold
+            && self.warmup_emitted
+            && total_nodes < self.config.max_nodes
+        {
+            let (keep, new, axis, pos) = Self::compute_binary_split(my_cell, local_positions);
+            events.push(ScaleEvent::SplitRecommended {
+                keep_cell: keep,
+                new_cell: new,
+                split_axis: axis,
+                split_pos: pos,
+            });
+            self.warmup_emitted = false;
             self.last_split_tick = self.tick_counter;
         }
 

@@ -287,7 +287,7 @@ fn render_server_drones(
 ) {
     frame_counter.0 = frame_counter.0.wrapping_add(1);
     let current_frame = frame_counter.0;
-    let despawn_grace_frames: u32 = 120;
+    let despawn_grace_frames: u32 = 300;
     let now_instant = std::time::Instant::now();
     let acc_map = net
         .accumulated
@@ -395,11 +395,15 @@ fn render_server_drones(
 
         if let Some(&entity) = existing_drones.get(&id) {
             if let Ok((_, mut transform, mut server_drone, material_handle)) = drone_query.get_mut(entity) {
-                transform.translation = transform.translation.lerp(pos, 0.7);
+                let dist = transform.translation.distance(pos);
+                let alpha = if dist > 5.0 { 0.9 } else { 0.4 };
+                transform.translation = transform.translation.lerp(pos, alpha);
                 server_drone.last_seen_frame = current_frame;
 
                 if !is_player && !cells.is_empty() {
-                    let (_, cell_idx) = visuals::cell_color_for_position(pos, &cells);
+                    let (_, cell_idx) = visuals::cell_color_for_position_with_hysteresis(
+                        pos, &cells, server_drone.cached_cell,
+                    );
                     server_drone.cached_cell = cell_idx;
                 }
 

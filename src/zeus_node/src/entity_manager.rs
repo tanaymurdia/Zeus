@@ -79,10 +79,6 @@ impl EntityManager {
                 if let Some(face) = self.cell.exit_face(entity.pos, self.margin) {
                     handoff_candidates.push((entity.id, face));
                 }
-            } else if entity.state == AuthorityState::HandoffOut {
-                entity.pos.0 += entity.vel.0 * dt;
-                entity.pos.1 += entity.vel.1 * dt;
-                entity.pos.2 += entity.vel.2 * dt;
             }
         }
 
@@ -124,12 +120,13 @@ impl EntityManager {
     }
 
     pub fn force_exit_check(&self) -> Vec<(u64, Face)> {
+        let hysteresis = 0.3_f32;
         let mut exits = Vec::new();
         for entity in self.entities.values() {
             if entity.state == AuthorityState::Local {
-                if let Some(face) = self.cell.exit_face(entity.pos, 0.0) {
+                if let Some(face) = self.cell.exit_face(entity.pos, hysteresis) {
                     exits.push((entity.id, face));
-                } else if !self.cell.contains(entity.pos) {
+                } else if !self.cell.contains_with_margin(entity.pos, hysteresis) {
                     let dx_pos = entity.pos.0 - self.cell.x_max;
                     let dx_neg = self.cell.x_min - entity.pos.0;
                     let dy_pos = entity.pos.1 - self.cell.y_max;

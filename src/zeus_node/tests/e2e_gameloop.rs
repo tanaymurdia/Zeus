@@ -2676,7 +2676,7 @@ async fn test_3d_cell_offer_accepted_if_inside_cell() {
     node.handle_handoff_msg(msg);
     let entity = node.manager.get_entity(99);
     assert!(entity.is_some(), "Offer inside cell should be accepted");
-    assert_eq!(entity.unwrap().state, AuthorityState::Local);
+    assert_eq!(entity.unwrap().state, AuthorityState::HandoffIn);
 }
 
 #[tokio::test]
@@ -3032,4 +3032,1077 @@ async fn test_cell_shrink_and_flush_consistency() {
     assert!(exit_ids.contains(&2));
     assert!(exit_ids.contains(&3));
     assert!(!exit_ids.contains(&1));
+}
+
+#[tokio::test]
+async fn test_handoff_uses_handoff_in_then_commit_promotes() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+    use zeus_node::node_actor::NodeActor;
+
+    let cell = Cell::new(0.0, 25.0, 0.0, 25.0, 0.0, 25.0);
+    let mut receiver = NodeActor::new_3d(cell, 1.0);
+
+    let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
+    let pos = zeus_common::Vec3::new(12.0, 12.0, 12.0);
+    let vel = zeus_common::Vec3::new(1.0, 0.5, -0.3);
+    let sig = builder.create_vector(&[0u8; 64]);
+    let ghost = zeus_common::Ghost::create(
+        &mut builder,
+        &zeus_common::GhostArgs {
+            entity_id: 42,
+            position: Some(&pos),
+            velocity: Some(&vel),
+            signature: Some(sig),
+        },
+    );
+    let msg = zeus_common::HandoffMsg::create(
+        &mut builder,
+        &zeus_common::HandoffMsgArgs {
+            entity_id: 42,
+            type_: zeus_common::HandoffType::Offer,
+            state: Some(ghost),
+        },
+    );
+    builder.finish(msg, None);
+    let buf = builder.finished_data().to_vec();
+    let msg = zeus_common::flatbuffers::root::<zeus_common::HandoffMsg>(&buf).unwrap();
+    receiver.handle_handoff_msg(msg);
+
+    let e = receiver.manager.get_entity(42).unwrap();
+    assert_eq!(e.state, AuthorityState::HandoffIn, "Offer should create entity as HandoffIn");
+    assert_eq!(receiver.outgoing_messages.len(), 1, "Should queue Ack");
+    assert_eq!(receiver.outgoing_messages[0].1, zeus_common::HandoffType::Ack);
+
+    let mut builder2 = zeus_common::flatbuffers::FlatBufferBuilder::new();
+    let commit_msg = zeus_common::HandoffMsg::create(
+        &mut builder2,
+        &zeus_common::HandoffMsgArgs {
+            entity_id: 42,
+            type_: zeus_common::HandoffType::Commit,
+            state: None,
+        },
+    );
+    builder2.finish(commit_msg, None);
+    let buf2 = builder2.finished_data().to_vec();
+    let commit = zeus_common::flatbuffers::root::<zeus_common::HandoffMsg>(&buf2).unwrap();
+    receiver.handle_handoff_msg(commit);
+
+    let e2 = receiver.manager.get_entity(42).unwrap();
+    assert_eq!(e2.state, AuthorityState::Local, "Commit should promote to Local");
+}
+
+#[tokio::test]
+async fn test_split_flow_entity_conservation_two_nodes() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let full_cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+
+    let mut world_a = TestWorld::new();
+    for id in 1..=20u64 {
+        let y = (id as f32) * 2.5;
+        world_a.spawn_local(id, (25.0, y, 25.0), (0.0, 0.0, 0.0));
+    }
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+
+    for id in 1..=20u64 {
+        let (pos, vel) = node_a.world.states[&id];
+        node_a.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+            id, pos, vel,
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+    }
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 25.0, 0.0, 50.0);
+    let cell_b = Cell::new(0.0, 50.0, 25.0, 50.0, 0.0, 50.0);
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let world_b = TestWorld::new();
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    for _ in 0..20 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    node_a.set_cell(cell_a.clone());
+    node_a.evict_out_of_cell_from_physics();
+
+    for _ in 0..80 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let a_local: Vec<u64> = node_a.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local)
+        .map(|(id, _)| *id).collect();
+    let b_local: Vec<u64> = node_b.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local)
+        .map(|(id, _)| *id).collect();
+
+    let total = a_local.len() + b_local.len();
+    assert!(total >= 18, "Should conserve most entities across split. Got A={} B={} total={}", a_local.len(), b_local.len(), total);
+
+    for id in &a_local {
+        assert!(!b_local.contains(id), "Entity {} should not be Local on both nodes", id);
+    }
+
+    for id in &a_local {
+        let e = node_a.engine.node.manager.get_entity(*id).unwrap();
+        assert!(cell_a.contains(e.pos) || cell_a.contains_with_margin(e.pos, 1.0),
+            "Entity {} at {:?} should be inside node A's cell", id, e.pos);
+    }
+    for id in &b_local {
+        let e = node_b.engine.node.manager.get_entity(*id).unwrap();
+        assert!(cell_b.contains(e.pos) || cell_b.contains_with_margin(e.pos, 1.0),
+            "Entity {} at {:?} should be inside node B's cell", id, e.pos);
+    }
+}
+
+#[tokio::test]
+async fn test_no_dual_broadcast_during_handoff() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 25.0, 0.0, 50.0);
+    let cell_b = Cell::new(0.0, 50.0, 25.0, 50.0, 0.0, 50.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell_a.clone()),
+    };
+    let mut world_a = TestWorld::new();
+    world_a.spawn_local(1, (25.0, 24.5, 25.0), (0.0, 5.0, 0.0));
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    node_a.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 1, pos: (25.0, 24.5, 25.0), vel: (0.0, 5.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let world_b = TestWorld::new();
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    let mut client = ZeusClient::new(999_999).unwrap();
+    client.connect(addr_a).await.unwrap();
+    let conn_b_client = {
+        let addr_b = node_b.engine.endpoint.local_addr().unwrap();
+        let mut c2 = ZeusClient::new(999_998).unwrap();
+        c2.connect(addr_b).await.unwrap();
+        c2
+    };
+    sleep(Duration::from_millis(30)).await;
+
+    for _ in 0..100 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let a_has = node_a.engine.node.manager.get_entity(1);
+    let b_has = node_b.engine.node.manager.get_entity(1);
+    let a_local = a_has.is_some_and(|e| e.state == AuthorityState::Local);
+    let b_local = b_has.is_some_and(|e| e.state == AuthorityState::Local);
+
+    assert!(a_local || b_local, "Entity 1 must be Local on exactly one node");
+    assert!(!(a_local && b_local), "Entity 1 must NOT be Local on both nodes simultaneously");
+    drop(client);
+    drop(conn_b_client);
+}
+
+#[tokio::test]
+async fn test_entity_arrives_as_dynamic_not_kinematic() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 25.0, 0.0, 50.0);
+    let cell_b = Cell::new(0.0, 50.0, 25.0, 50.0, 0.0, 50.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell_a.clone()),
+    };
+    let mut world_a = TestWorld::new();
+    world_a.spawn_local(1, (25.0, 24.0, 25.0), (0.0, 10.0, 0.0));
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    node_a.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 1, pos: (25.0, 24.0, 25.0), vel: (0.0, 10.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let world_b = TestWorld::new();
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    for _ in 0..20 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    for _ in 0..80 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let b_arrived = &node_b.world.arrived;
+    assert!(b_arrived.contains(&1), "Entity 1 should arrive on node B via EntityArrived (for dynamic body creation). Arrived: {:?}", b_arrived);
+
+    assert!(node_b.world.local_ids.contains(&1),
+        "Entity 1 should be in locally_simulated_ids (dynamic body). local_ids: {:?}", node_b.world.local_ids);
+}
+
+#[tokio::test]
+async fn test_handoff_in_not_broadcast_to_clients() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+    use zeus_node::node_actor::NodeActor;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell.clone()),
+    };
+    let world = TestWorld::new();
+    let mut node = GameLoop::new(config, world).await.unwrap();
+
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 10, pos: (25.0, 25.0, 25.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 20, pos: (25.0, 25.0, 25.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::HandoffIn, verifying_key: None,
+    });
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 30, pos: (25.0, 25.0, 25.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::HandoffOut, verifying_key: None,
+    });
+
+    let mut client = ZeusClient::new(888_888).unwrap();
+    client.connect(node.engine.endpoint.local_addr().unwrap()).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    for _ in 0..5 {
+        node.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let conn = client.connection().unwrap();
+    let mut seen_ids: HashSet<u64> = HashSet::new();
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(10), conn.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        seen_ids.insert(id);
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(seen_ids.contains(&10), "Local entity 10 should be broadcast");
+    assert!(seen_ids.contains(&30), "HandoffOut entity 30 should be broadcast (parent keeps broadcasting during transit)");
+    assert!(!seen_ids.contains(&20), "HandoffIn entity 20 should NOT be broadcast (receiver waits for Commit)");
+}
+
+#[tokio::test]
+async fn test_split_no_entity_loss_with_velocity() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let full_cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+
+    let mut world_a = TestWorld::new();
+    for id in 1..=10u64 {
+        let y = 23.0 + (id as f32) * 0.4;
+        let vy = 3.0;
+        world_a.spawn_local(id, (25.0, y, 25.0), (0.0, vy, 0.0));
+    }
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+
+    for id in 1..=10u64 {
+        let (pos, vel) = node_a.world.states[&id];
+        node_a.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+            id, pos, vel,
+            state: AuthorityState::Local,
+            verifying_key: None,
+        });
+    }
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 25.0, 0.0, 50.0);
+    let cell_b = Cell::new(0.0, 50.0, 25.0, 50.0, 0.0, 50.0);
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let world_b = TestWorld::new();
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    for _ in 0..20 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    node_a.set_cell(cell_a.clone());
+    node_a.evict_out_of_cell_from_physics();
+
+    for _ in 0..120 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let a_local: HashSet<u64> = node_a.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local)
+        .map(|(id, _)| *id).collect();
+    let b_local: HashSet<u64> = node_b.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local)
+        .map(|(id, _)| *id).collect();
+
+    let total = a_local.len() + b_local.len();
+    assert_eq!(total, 10, "All 10 entities must be conserved. A={} B={}", a_local.len(), b_local.len());
+
+    let overlap: Vec<u64> = a_local.intersection(&b_local).copied().collect();
+    assert!(overlap.is_empty(), "No entity should be Local on both nodes: {:?}", overlap);
+}
+
+#[tokio::test]
+async fn test_handoff_in_entity_not_moved_by_entity_manager() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity, EntityManager};
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let mut em = EntityManager::new_3d(cell, 1.0);
+
+    em.add_entity(Entity {
+        id: 1, pos: (10.0, 10.0, 10.0), vel: (100.0, 100.0, 100.0),
+        state: AuthorityState::HandoffIn, verifying_key: None,
+    });
+    em.add_entity(Entity {
+        id: 2, pos: (10.0, 10.0, 10.0), vel: (100.0, 100.0, 100.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    em.update(1.0);
+
+    let e1 = em.get_entity(1).unwrap();
+    assert!((e1.pos.0 - 10.0).abs() < 0.01, "HandoffIn entity should NOT be moved. pos.x={}", e1.pos.0);
+
+    let e2 = em.get_entity(2).unwrap();
+    assert!((e2.pos.0 - 110.0).abs() < 0.01, "Local entity should be moved. pos.x={}", e2.pos.0);
+}
+
+#[tokio::test]
+async fn test_client_state_bypasses_handoff_in() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell),
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    let mut client = ZeusClient::new(1_000_001).unwrap();
+    client.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    client.send_state((25.0, 25.0, 25.0), (1.0, 0.0, 0.0)).await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..10 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let entity = game_loop.engine.node.manager.get_entity(1_000_001);
+    assert!(entity.is_some(), "Player entity should exist after sending state");
+    assert_eq!(entity.unwrap().state, AuthorityState::Local,
+        "Player entity from client should be Local immediately (not HandoffIn)");
+}
+
+#[tokio::test]
+async fn test_eviction_freezes_position_and_sets_handoff_out() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let full_cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let keep_cell = Cell::new(0.0, 100.0, 0.0, 50.0, 0.0, 100.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+    let mut world = TestWorld::new();
+    world.spawn_local(1, (50.0, 60.0, 50.0), (0.0, -200.0, 0.0));
+    world.spawn_local(2, (50.0, 70.0, 50.0), (0.0, 30.0, 0.0));
+    world.spawn_local(3, (50.0, 20.0, 50.0), (0.0, 0.0, 0.0));
+    let mut gl = GameLoop::new(config, world).await.unwrap();
+
+    for id in [1u64, 2, 3] {
+        let (pos, vel) = gl.world.states[&id];
+        gl.engine.node.manager.add_entity(Entity {
+            id, pos, vel, state: AuthorityState::Local, verifying_key: None,
+        });
+    }
+
+    gl.set_cell(keep_cell.clone());
+    gl.evict_out_of_cell_from_physics();
+
+    let e1 = gl.engine.node.manager.get_entity(1).unwrap();
+    assert_eq!(e1.state, AuthorityState::HandoffOut,
+        "Entity 1 (y=60, outside keep_cell y_max=50) must be HandoffOut");
+    assert!((e1.pos.1 - 60.0).abs() < 0.01,
+        "Position must be frozen. y={}", e1.pos.1);
+    assert!(!gl.world.local_ids.contains(&1),
+        "Entity 1 must be removed from physics");
+
+    let e2 = gl.engine.node.manager.get_entity(2).unwrap();
+    assert_eq!(e2.state, AuthorityState::HandoffOut,
+        "Entity 2 (y=70, outside keep_cell y_max=50) must be HandoffOut");
+
+    let e3 = gl.engine.node.manager.get_entity(3).unwrap();
+    assert_eq!(e3.state, AuthorityState::Local,
+        "Entity 3 (y=20, inside keep_cell) must remain Local");
+    assert!(gl.world.local_ids.contains(&3),
+        "Entity 3 must remain in physics");
+
+    gl.tick(0.016).await.unwrap();
+
+    let e1_after = gl.engine.node.manager.get_entity(1).unwrap();
+    assert_eq!(e1_after.state, AuthorityState::HandoffOut,
+        "HandoffOut entity must NOT drift back to Local after tick");
+    assert!((e1_after.pos.1 - 60.0).abs() < 0.01,
+        "HandoffOut entity must NOT move. y={}", e1_after.pos.1);
+}
+
+#[tokio::test]
+async fn test_resync_creates_dynamic_not_kinematic() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell.clone()),
+    };
+    let world = TestWorld::new();
+    let mut gl = GameLoop::new(config, world).await.unwrap();
+
+    gl.engine.node.manager.add_entity(Entity {
+        id: 42, pos: (50.0, 50.0, 50.0), vel: (1.0, 2.0, 3.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    gl.tick(0.016).await.unwrap();
+
+    assert!(gl.world.local_ids.contains(&42),
+        "Re-sync should add entity via on_entity_arrived, placing it in local_ids (dynamic)");
+    assert!(gl.world.states.contains_key(&42),
+        "Entity state should exist after re-sync");
+}
+
+#[tokio::test]
+async fn test_split_entity_conservation_precise_tick_by_tick() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let full_cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let keep_cell = Cell::new(0.0, 100.0, 0.0, 50.0, 0.0, 100.0);
+    let new_cell = Cell::new(0.0, 100.0, 50.0, 100.0, 0.0, 100.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+    let total = 40u64;
+    let mut world_a = TestWorld::new();
+    let mut all_ids = Vec::new();
+    for i in 0..total {
+        let y = 5.0 + (i as f32) * 2.3;
+        world_a.spawn_local(i + 1, (50.0, y, 50.0), (0.0, 0.0, 0.0));
+        all_ids.push(i + 1);
+    }
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    for id in &all_ids {
+        let (pos, vel) = node_a.world.states[id];
+        node_a.engine.node.manager.add_entity(Entity {
+            id: *id, pos, vel, state: AuthorityState::Local, verifying_key: None,
+        });
+    }
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(new_cell.clone()),
+    };
+    let world_b = TestWorld::new();
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    for _ in 0..30 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let pre_split_total: usize = node_a.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    assert_eq!(pre_split_total, total as usize,
+        "Before split all entities should be Local on A");
+
+    node_a.set_cell(keep_cell.clone());
+    node_a.evict_out_of_cell_from_physics();
+
+    let after_evict_local: usize = node_a.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let after_evict_ho: usize = node_a.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::HandoffOut).count();
+    assert_eq!(after_evict_local + after_evict_ho, total as usize,
+        "Immediately after eviction: Local({}) + HandoffOut({}) must equal total({})",
+        after_evict_local, after_evict_ho, total);
+
+    let mut tick_violations = Vec::new();
+    let mut max_in_flight = 0usize;
+
+    for tick in 0..300 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        let a_local: usize = node_a.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::Local).count();
+        let a_ho: usize = node_a.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffOut).count();
+        let b_local: usize = node_b.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::Local).count();
+        let b_hi: usize = node_b.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffIn).count();
+
+        let in_flight = a_ho + b_hi;
+        if in_flight > max_in_flight { max_in_flight = in_flight; }
+
+        let accounted = a_local + a_ho + b_local + b_hi;
+        if accounted < (total as usize) {
+            tick_violations.push((tick, a_local, a_ho, b_local, b_hi, accounted));
+        }
+
+        let a_physics = node_a.world.local_ids.len();
+        if (a_physics as i64 - a_local as i64).unsigned_abs() > 2 {
+            tick_violations.push((tick, a_physics, 0, a_local, 0, 9999));
+        }
+
+        if in_flight == 0 && b_local > 0 && tick > 30 { break; }
+    }
+
+    assert!(tick_violations.is_empty(),
+        "Entity conservation violated at {} ticks. First violations: {:?}",
+        tick_violations.len(), &tick_violations[..tick_violations.len().min(5)]);
+
+    let final_a: usize = node_a.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let final_b: usize = node_b.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    assert_eq!(final_a + final_b, total as usize,
+        "After split: A={} B={} sum={} (expected {})", final_a, final_b, final_a + final_b, total);
+}
+
+#[tokio::test]
+async fn test_double_split_entity_conservation() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let full_cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+    let total = 60u64;
+    let mut world_a = TestWorld::new();
+    for i in 0..total {
+        let y = 5.0 + (i as f32) * 1.5;
+        world_a.spawn_local(i + 1, (50.0, y, 50.0), (0.0, 0.0, 0.0));
+    }
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    for i in 0..total {
+        let id = i + 1;
+        let (pos, vel) = node_a.world.states[&id];
+        node_a.engine.node.manager.add_entity(Entity {
+            id, pos, vel, state: AuthorityState::Local, verifying_key: None,
+        });
+    }
+
+    let cell_b = Cell::new(0.0, 100.0, 50.0, 100.0, 0.0, 100.0);
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let mut node_b = GameLoop::new(config_b, TestWorld::new()).await.unwrap();
+    let addr_b = node_b.engine.endpoint.local_addr().unwrap();
+
+    for _ in 0..30 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let keep_a = Cell::new(0.0, 100.0, 0.0, 50.0, 0.0, 100.0);
+    node_a.set_cell(keep_a.clone());
+    node_a.evict_out_of_cell_from_physics();
+
+    for _ in 0..200 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        let pending_a: usize = node_a.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffOut).count();
+        let pending_b: usize = node_b.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffIn).count();
+        if pending_a == 0 && pending_b == 0 { break; }
+    }
+
+    let s1_a: usize = node_a.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let s1_b: usize = node_b.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let s1_total = s1_a + s1_b;
+    assert!(s1_total >= (total as usize - 2),
+        "After split 1: A={} B={} total={} (expected ~{})", s1_a, s1_b, s1_total, total);
+
+    let cell_c = Cell::new(0.0, 100.0, 50.0, 75.0, 0.0, 100.0);
+    let cell_b2 = Cell::new(0.0, 100.0, 75.0, 100.0, 0.0, 100.0);
+
+    let config_c = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a, addr_b],
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 2,
+        lower_boundary: 0.0,
+        cell: Some(cell_c.clone()),
+    };
+    let mut node_c = GameLoop::new(config_c, TestWorld::new()).await.unwrap();
+
+    for _ in 0..30 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        node_c.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    node_b.set_cell(cell_b2.clone());
+    node_b.evict_out_of_cell_from_physics();
+
+    for _ in 0..200 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        node_c.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        let pa: usize = node_a.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffOut).count();
+        let pb: usize = node_b.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffOut).count();
+        let pc: usize = node_c.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffIn).count();
+        if pa + pb + pc == 0 { break; }
+    }
+
+    let f_a: usize = node_a.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let f_b: usize = node_b.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let f_c: usize = node_c.engine.node.manager.entities.values()
+        .filter(|e| e.state == AuthorityState::Local).count();
+    let grand = f_a + f_b + f_c;
+    assert!(grand >= (total as usize - 3),
+        "After 2 splits across 3 nodes: A={} B={} C={} total={} (expected ~{})",
+        f_a, f_b, f_c, grand, total);
+
+    let a_ids: HashSet<u64> = node_a.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local).map(|(id, _)| *id).collect();
+    let b_ids: HashSet<u64> = node_b.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local).map(|(id, _)| *id).collect();
+    let c_ids: HashSet<u64> = node_c.engine.node.manager.entities.iter()
+        .filter(|(_, e)| e.state == AuthorityState::Local).map(|(id, _)| *id).collect();
+    let ab_overlap: Vec<u64> = a_ids.intersection(&b_ids).copied().collect();
+    let bc_overlap: Vec<u64> = b_ids.intersection(&c_ids).copied().collect();
+    let ac_overlap: Vec<u64> = a_ids.intersection(&c_ids).copied().collect();
+    assert!(ab_overlap.is_empty(), "A/B dual ownership: {:?}", ab_overlap);
+    assert!(bc_overlap.is_empty(), "B/C dual ownership: {:?}", bc_overlap);
+    assert!(ac_overlap.is_empty(), "A/C dual ownership: {:?}", ac_overlap);
+}
+
+#[tokio::test]
+async fn test_handoff_out_not_moved_by_entity_manager_update() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity, EntityManager};
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let mut em = EntityManager::new_3d(cell, 1.0);
+
+    em.add_entity(Entity {
+        id: 1, pos: (10.0, 30.0, 10.0), vel: (0.0, -100.0, 0.0),
+        state: AuthorityState::HandoffOut, verifying_key: None,
+    });
+    em.add_entity(Entity {
+        id: 2, pos: (10.0, 30.0, 10.0), vel: (0.0, -100.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    em.update(1.0);
+
+    let e1 = em.get_entity(1).unwrap();
+    assert!((e1.pos.1 - 30.0).abs() < 0.01,
+        "HandoffOut entity should NOT be moved by update(). y={}", e1.pos.1);
+
+    let e2 = em.get_entity(2).unwrap();
+    assert!((e2.pos.1 - (-70.0)).abs() < 0.01,
+        "Local entity should be moved. y={}", e2.pos.1);
+}
+
+#[tokio::test]
+async fn test_handoff_retry_fires_immediately_after_eviction() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let full_cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let keep_cell = Cell::new(0.0, 100.0, 0.0, 50.0, 0.0, 100.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+    let mut world = TestWorld::new();
+    world.spawn_local(1, (50.0, 70.0, 50.0), (0.0, 0.0, 0.0));
+    let mut gl = GameLoop::new(config, world).await.unwrap();
+    gl.engine.node.manager.add_entity(Entity {
+        id: 1, pos: (50.0, 70.0, 50.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    gl.set_cell(keep_cell);
+    gl.evict_out_of_cell_from_physics();
+
+    assert_eq!(gl.engine.handoff_retry_counter, 127,
+        "After eviction, retry counter should be set to 127 so next tick triggers offers");
+}
+
+#[tokio::test]
+async fn test_physics_ids_match_local_ids_throughout_split() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let full_cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let keep_cell = Cell::new(0.0, 50.0, 0.0, 25.0, 0.0, 50.0);
+    let new_cell = Cell::new(0.0, 50.0, 25.0, 50.0, 0.0, 50.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+    let mut world_a = TestWorld::new();
+    for i in 0..20u64 {
+        let y = 3.0 + (i as f32) * 2.3;
+        world_a.spawn_local(i + 1, (25.0, y, 25.0), (0.0, 0.0, 0.0));
+    }
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    for i in 0..20u64 {
+        let id = i + 1;
+        let (pos, vel) = node_a.world.states[&id];
+        node_a.engine.node.manager.add_entity(Entity {
+            id, pos, vel, state: AuthorityState::Local, verifying_key: None,
+        });
+    }
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(new_cell.clone()),
+    };
+    let mut node_b = GameLoop::new(config_b, TestWorld::new()).await.unwrap();
+
+    for _ in 0..30 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    node_a.set_cell(keep_cell.clone());
+    node_a.evict_out_of_cell_from_physics();
+
+    let mut mismatches = Vec::new();
+
+    for tick in 0..300 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        let a_physics = node_a.world.local_ids.len();
+        let a_local: usize = node_a.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::Local).count();
+        let b_physics = node_b.world.local_ids.len();
+        let b_local: usize = node_b.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::Local).count();
+
+        if a_physics != a_local {
+            mismatches.push(format!("tick={} A: physics={} local={}", tick, a_physics, a_local));
+        }
+        if b_physics != b_local {
+            mismatches.push(format!("tick={} B: physics={} local={}", tick, b_physics, b_local));
+        }
+
+        let pending: usize = node_a.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::HandoffOut).count()
+            + node_b.engine.node.manager.entities.values()
+                .filter(|e| e.state == AuthorityState::HandoffIn).count();
+        if pending == 0 && b_local > 0 && tick > 30 { break; }
+    }
+
+    assert!(mismatches.len() <= 10,
+        "Physics/local count mismatches: {} occurrences. Samples: {:?}",
+        mismatches.len(), &mismatches[..mismatches.len().min(5)]);
+}
+
+#[tokio::test]
+async fn test_boundary_entity_does_not_pingpong() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let full_cell = Cell::new(0.0, 100.0, 0.0, 100.0, 0.0, 100.0);
+    let keep_cell = Cell::new(0.0, 100.0, 0.0, 50.0, 0.0, 100.0);
+    let new_cell = Cell::new(0.0, 100.0, 50.0, 100.0, 0.0, 100.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(full_cell.clone()),
+    };
+    let mut world_a = TestWorld::new();
+    let id_boundary = 1u64;
+    world_a.spawn_local(id_boundary, (50.0, 50.2, 50.0), (0.0, -0.5, 0.0));
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    node_a.engine.node.manager.add_entity(Entity {
+        id: id_boundary, pos: (50.0, 50.2, 50.0), vel: (0.0, -0.5, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(new_cell.clone()),
+    };
+    let mut node_b = GameLoop::new(config_b, TestWorld::new()).await.unwrap();
+
+    for _ in 0..30 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    node_a.set_cell(keep_cell.clone());
+    node_a.evict_out_of_cell_from_physics();
+
+    let mut handoff_transitions = 0u32;
+    let mut last_owner = 'A';
+
+    for _ in 0..300 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        let on_a = node_a.engine.node.manager.get_entity(id_boundary)
+            .is_some_and(|e| e.state == AuthorityState::Local);
+        let on_b = node_b.engine.node.manager.get_entity(id_boundary)
+            .is_some_and(|e| e.state == AuthorityState::Local);
+
+        let current = if on_a { 'A' } else if on_b { 'B' } else { last_owner };
+        if current != last_owner {
+            handoff_transitions += 1;
+            last_owner = current;
+        }
+    }
+
+    assert!(handoff_transitions <= 4,
+        "Entity near boundary should not ping-pong. Transitions: {} (expected <= 4)", handoff_transitions);
+}
+
+#[tokio::test]
+async fn test_clamp_inside_prevents_immediate_rehandoff() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::{AuthorityState, Entity};
+
+    let cell_a = Cell::new(0.0, 100.0, 0.0, 50.0, 0.0, 100.0);
+    let cell_b = Cell::new(0.0, 100.0, 50.0, 100.0, 0.0, 100.0);
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let mut world_b = TestWorld::new();
+    world_b.spawn_local(42, (50.0, 50.5, 50.0), (0.0, -2.0, 0.0));
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    node_b.engine.node.manager.add_entity(Entity {
+        id: 42, pos: (50.0, 50.5, 50.0), vel: (0.0, -2.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let mut exit_detected = false;
+    for _ in 0..10 {
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+
+        let e = node_b.engine.node.manager.get_entity(42);
+        if e.is_some_and(|e| e.state == AuthorityState::HandoffOut) {
+            exit_detected = true;
+            break;
+        }
+    }
+
+    assert!(!exit_detected,
+        "Entity at y=50.5 with vel=-2 should NOT immediately exit cell [50,100] due to hysteresis margin");
 }

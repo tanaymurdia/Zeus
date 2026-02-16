@@ -36,6 +36,30 @@ pub fn cell_color_for_position(pos: Vec3, cells: &[crate::network::CellBounds]) 
     (CELL_COLORS[0], 0)
 }
 
+pub fn cell_color_for_position_with_hysteresis(
+    pos: Vec3,
+    cells: &[crate::network::CellBounds],
+    current_cell: usize,
+) -> (Color, usize) {
+    let margin = 0.5;
+    if current_cell < cells.len() {
+        let cell = &cells[current_cell];
+        if pos.x >= cell.x_min + margin && pos.x <= cell.x_max - margin
+            && pos.y >= cell.y_min + margin && pos.y <= cell.y_max - margin
+            && pos.z >= cell.z_min + margin && pos.z <= cell.z_max - margin
+        {
+            return (cell_color_for_index(current_cell), current_cell);
+        }
+        if pos.x >= cell.x_min && pos.x <= cell.x_max
+            && pos.y >= cell.y_min && pos.y <= cell.y_max
+            && pos.z >= cell.z_min && pos.z <= cell.z_max
+        {
+            return (cell_color_for_index(current_cell), current_cell);
+        }
+    }
+    cell_color_for_position(pos, cells)
+}
+
 fn draw_octree_wireframes(
     octree_cells: Res<OctreeCells>,
     mut gizmos: Gizmos,

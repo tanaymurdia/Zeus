@@ -70,15 +70,16 @@ impl NodeActor {
                     } else {
                         let cell = self.manager.cell();
                         let is_3d = cell.y_min.is_finite();
-                        if is_3d && !cell.contains(entity_pos) {
+                        if is_3d && !cell.contains_with_margin(entity_pos, 1.0) {
                             return;
                         }
+                        let clamped_pos = cell.clamp_inside(entity_pos, 0.5);
                         let was_remote = matches!(current_state, Some(AuthorityState::Remote));
                         let entity = Entity {
                             id,
-                            pos: entity_pos,
+                            pos: clamped_pos,
                             vel: (vel.x(), vel.y(), vel.z()),
-                            state: AuthorityState::Local,
+                            state: AuthorityState::HandoffIn,
                             verifying_key: known_key,
                         };
                         self.manager.add_entity(entity);
@@ -168,7 +169,7 @@ mod tests {
 
         node.handle_handoff_msg(msg);
         let e = node.manager.get_entity(99).unwrap();
-        assert_eq!(e.state, AuthorityState::Local);
+        assert_eq!(e.state, AuthorityState::HandoffIn);
         node.outgoing_messages.clear();
         let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
         let msg = zeus_common::HandoffMsg::create(

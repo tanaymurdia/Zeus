@@ -22,14 +22,14 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(short, long, default_value = "127.0.0.1:5000")]
+    #[arg(short, long, default_value = "127.0.0.1:9000")]
     bind: SocketAddr,
 }
 
 #[derive(clap::Subcommand)]
 enum Commands {
     Orchestrator {
-        #[arg(short, long, default_value = "5000")]
+        #[arg(short, long, default_value = "9000")]
         start_port: u16,
     },
     RunNode {
@@ -257,6 +257,11 @@ impl DroneWorld {
         for drone in self.drones.values() {
             if let Some(rb) = self.rigid_body_set.get_mut(drone.rigid_body_handle) {
                 if !rb.is_dynamic() { continue; }
+                let pos = *rb.translation();
+                let inside = pos.x >= wmin.0 && pos.x <= wmax.0
+                    && pos.y >= wmin.1 && pos.y <= wmax.1
+                    && pos.z >= wmin.2 && pos.z <= wmax.2;
+                if !inside { continue; }
 
                 let s = drone.wander_seed as f32;
                 let t = tick as f32 / 128.0;
@@ -271,7 +276,6 @@ impl DroneWorld {
                 let wz = (t * freq_z + phase_z).sin() * WANDER_FORCE;
                 let mut force = vector![wx, wy, wz];
 
-                let pos = *rb.translation();
                 let margin = WALL_REPEL_DIST;
                 if pos.x < wmin.0 + margin { force.x += WALL_REPEL_FORCE * ((1.0 - (pos.x - wmin.0) / margin).clamp(0.0, 2.0)); }
                 if pos.x > wmax.0 - margin { force.x -= WALL_REPEL_FORCE * ((1.0 - (wmax.0 - pos.x) / margin).clamp(0.0, 2.0)); }
@@ -311,6 +315,8 @@ impl DroneWorld {
     }
 
     fn cap_speeds(&mut self) {
+        let wmin = self.world_min;
+        let wmax = self.world_max;
         for drone in self.drones.values() {
             if let Some(rb) = self.rigid_body_set.get_mut(drone.rigid_body_handle) {
                 if !rb.is_dynamic() { continue; }
@@ -320,15 +326,18 @@ impl DroneWorld {
                     rb.set_linvel(vel * (MAX_DRONE_SPEED / speed), true);
                 }
                 let pos = *rb.translation();
-                let wmin = self.world_min;
-                let wmax = self.world_max;
-                let clamped = vector![
-                    pos.x.clamp(wmin.0 + 0.1, wmax.0 - 0.1),
-                    pos.y.clamp(wmin.1 + 0.1, wmax.1 - 0.1),
-                    pos.z.clamp(wmin.2 + 0.1, wmax.2 - 0.1)
-                ];
-                if clamped != pos {
-                    rb.set_translation(clamped, true);
+                let inside = pos.x >= wmin.0 && pos.x <= wmax.0
+                    && pos.y >= wmin.1 && pos.y <= wmax.1
+                    && pos.z >= wmin.2 && pos.z <= wmax.2;
+                if inside {
+                    let clamped = vector![
+                        pos.x.clamp(wmin.0 + 0.1, wmax.0 - 0.1),
+                        pos.y.clamp(wmin.1 + 0.1, wmax.1 - 0.1),
+                        pos.z.clamp(wmin.2 + 0.1, wmax.2 - 0.1)
+                    ];
+                    if clamped != pos {
+                        rb.set_translation(clamped, true);
+                    }
                 }
             }
         }
@@ -364,7 +373,7 @@ impl DroneWorld {
     }
 
     fn drone_count(&self) -> usize {
-        self.drones.len()
+        self.drone_ids.len()
     }
 
     fn spawn_drone_near(&mut self, center: (f32, f32, f32), count: usize) -> Vec<u64> {
@@ -478,7 +487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let parsed_cell = cell.and_then(|s| parse_cell_arg(&s));
             run_node(bind, id, seed_addrs, parsed_cell).await
         }
-        None => run_node(cli.bind, 0, Vec::new(), None).await,
+        None => run_orchestrator(9000).await,
     }
 }
 
@@ -710,6 +719,7 @@ async fn run_node(
     let mut status_counter: u32 = 0;
     let mut cell_broadcast_counter: u32 = 0;
     let mut my_cell = initial_cell;
+    let mut pending_split: Option<(Cell, Cell)> = None;
 
     loop {
         let loop_start = std::time::Instant::now();
@@ -794,30 +804,28 @@ async fn run_node(
         for se in &scale_events {
             match se {
                 ScaleEvent::WarmupRecommended { projected_cell, projected_new_cell, .. } => {
-                    my_cell = projected_cell.clone();
-                    game_loop.set_cell(my_cell.clone());
-                    game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
-                    game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
-                    println!(
-                        "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
-                        projected_new_cell.x_min, projected_new_cell.x_max,
-                        projected_new_cell.y_min, projected_new_cell.y_max,
-                        projected_new_cell.z_min, projected_new_cell.z_max,
-                    );
-                    game_loop.evict_out_of_cell_from_physics();
+                    if pending_split.is_none() {
+                        pending_split = Some((projected_cell.clone(), projected_new_cell.clone()));
+                        println!(
+                            "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
+                            projected_new_cell.x_min, projected_new_cell.x_max,
+                            projected_new_cell.y_min, projected_new_cell.y_max,
+                            projected_new_cell.z_min, projected_new_cell.z_max,
+                        );
+                    }
                 }
                 ScaleEvent::SplitRecommended { keep_cell, new_cell, .. } => {
-                    my_cell = keep_cell.clone();
-                    game_loop.set_cell(my_cell.clone());
-                    game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
-                    game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
-                    println!(
-                        "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
-                        new_cell.x_min, new_cell.x_max,
-                        new_cell.y_min, new_cell.y_max,
-                        new_cell.z_min, new_cell.z_max,
-                    );
-                    game_loop.evict_out_of_cell_from_physics();
+                    if pending_split.is_some() {
+                        pending_split = Some((keep_cell.clone(), new_cell.clone()));
+                    } else {
+                        pending_split = Some((keep_cell.clone(), new_cell.clone()));
+                        println!(
+                            "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
+                            new_cell.x_min, new_cell.x_max,
+                            new_cell.y_min, new_cell.y_max,
+                            new_cell.z_min, new_cell.z_max,
+                        );
+                    }
                 }
                 ScaleEvent::MergeRecommended => {
                     println!("REQUEST_MERGE");
@@ -831,6 +839,20 @@ async fn run_node(
                 }
                 ScaleEvent::PeerJoined { id: pid } => {
                     eprintln!("[Node {}] Peer {} joined", id, pid);
+                    if let Some((keep_cell, _new_cell)) = pending_split.take() {
+                        my_cell = keep_cell;
+                        game_loop.set_cell(my_cell.clone());
+                        game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
+                        game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
+                        game_loop.evict_out_of_cell_from_physics();
+                        eprintln!("[Node {}] Cell shrunk to {:?} (peer {} ready)", id, my_cell, pid);
+                    }
+                    let mut all_cells = vec![my_cell.clone()];
+                    for (_, cell) in game_loop.engine.discovery.peer_cells() {
+                        all_cells.push(cell);
+                    }
+                    game_loop.broadcast_cells(&all_cells);
+                    game_loop.broadcast_status();
                 }
                 ScaleEvent::PeerLeft { id: pid, .. } => {
                     eprintln!("[Node {}] Peer {} left", id, pid);
@@ -840,7 +862,11 @@ async fn run_node(
 
         cell_broadcast_counter += 1;
         if cell_broadcast_counter % 16 == 0 {
-            game_loop.broadcast_cells(&[my_cell.clone()]);
+            let mut all_cells = vec![my_cell.clone()];
+            for (_, cell) in game_loop.engine.discovery.peer_cells() {
+                all_cells.push(cell);
+            }
+            game_loop.broadcast_cells(&all_cells);
         }
 
         status_counter += 1;

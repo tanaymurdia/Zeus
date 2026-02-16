@@ -40,6 +40,22 @@ impl Cell {
             && pos.2 >= self.z_min && pos.2 <= self.z_max
     }
 
+    pub fn contains_with_margin(&self, pos: (f32, f32, f32), margin: f32) -> bool {
+        pos.0 >= self.x_min - margin && pos.0 <= self.x_max + margin
+            && pos.1 >= self.y_min - margin && pos.1 <= self.y_max + margin
+            && pos.2 >= self.z_min - margin && pos.2 <= self.z_max + margin
+    }
+
+    pub fn clamp_inside(&self, pos: (f32, f32, f32), inset: f32) -> (f32, f32, f32) {
+        let cx = (self.x_min + self.x_max) * 0.5;
+        let cy = (self.y_min + self.y_max) * 0.5;
+        let cz = (self.z_min + self.z_max) * 0.5;
+        let (lo_x, hi_x) = if self.x_max - self.x_min > inset * 2.0 { (self.x_min + inset, self.x_max - inset) } else { (cx, cx) };
+        let (lo_y, hi_y) = if self.y_max - self.y_min > inset * 2.0 { (self.y_min + inset, self.y_max - inset) } else { (cy, cy) };
+        let (lo_z, hi_z) = if self.z_max - self.z_min > inset * 2.0 { (self.z_min + inset, self.z_max - inset) } else { (cz, cz) };
+        (pos.0.clamp(lo_x, hi_x), pos.1.clamp(lo_y, hi_y), pos.2.clamp(lo_z, hi_z))
+    }
+
     pub fn center(&self) -> (f32, f32, f32) {
         (
             (self.x_min + self.x_max) * 0.5,

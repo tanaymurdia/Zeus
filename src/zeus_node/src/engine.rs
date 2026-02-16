@@ -65,7 +65,7 @@ pub struct ZeusEngine {
     pub peer_verifying_keys: HashMap<u64, VerifyingKey>,
     heartbeat_counter: u32,
     tick_counter: u32,
-    handoff_retry_counter: u32,
+    pub handoff_retry_counter: u32,
 }
 
 impl ZeusEngine {
@@ -221,28 +221,34 @@ impl ZeusEngine {
         let mut exit_candidates = self.node.update(dt);
         self.handoff_retry_counter += 1;
         let my_cell = self.node.manager.cell().clone();
-        if self.handoff_retry_counter % 64 == 0 {
+        if self.handoff_retry_counter % 128 == 0 && !self.peer_connections.is_empty() {
             let stuck: Vec<u64> = self.node.manager.entities.iter()
                 .filter(|(_, e)| e.state == AuthorityState::HandoffOut && !my_cell.contains(e.pos))
                 .map(|(id, _)| *id)
                 .collect();
             for id in &stuck {
-                if self.peer_connections.is_empty() {
-                    self.node.manager.remove_entity(*id);
-                    app_events.push(ZeusEvent::EntityDeparted { id: *id });
-                } else {
-                    let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
-                    for conn in &self.peer_connections {
-                        let timeout_dur = std::time::Duration::from_millis(10);
-                        if let Ok(Ok(mut stream)) =
-                            tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                        {
-                            let _ = stream.write_all(&msg_bytes).await;
-                            let _ = stream.finish();
-                        }
+                let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
+                for conn in &self.peer_connections {
+                    let timeout_dur = std::time::Duration::from_millis(10);
+                    if let Ok(Ok(mut stream)) =
+                        tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                    {
+                        let _ = stream.write_all(&msg_bytes).await;
+                        let _ = stream.finish();
                     }
                 }
             }
+        }
+        if self.handoff_retry_counter >= 1024 {
+            let long_stuck: Vec<u64> = self.node.manager.entities.iter()
+                .filter(|(_, e)| e.state == AuthorityState::HandoffOut && !my_cell.contains(e.pos))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in &long_stuck {
+                self.node.manager.remove_entity(*id);
+                app_events.push(ZeusEvent::EntityDeparted { id: *id });
+            }
+            self.handoff_retry_counter = 0;
         }
         let forced_exits = self.node.manager.force_exit_check();
         for fe in forced_exits {
@@ -308,6 +314,13 @@ impl ZeusEngine {
                                 self.node.manager.get_entity(id).map(|e| e.state.clone());
 
                             self.node.handle_handoff_msg(msg);
+
+                            let is_from_peer = self.peer_connections.iter().any(|pc| pc.remote_address() == conn.remote_address());
+                            if !is_from_peer {
+                                if self.node.manager.get_entity(id).is_some_and(|e| e.state == AuthorityState::HandoffIn) {
+                                    self.node.manager.set_state(id, AuthorityState::Local);
+                                }
+                            }
 
                             let new_state =
                                 self.node.manager.get_entity(id).map(|e| e.state.clone());
@@ -401,7 +414,7 @@ impl ZeusEngine {
                                     offset += 2;
                                     let vz = dequantize_vel(i16::from_le_bytes([bytes[offset], bytes[offset+1]]));
                                     offset += 2;
-                                    if self.node.manager.get_entity(id).is_some_and(|e| e.state == AuthorityState::Local) {
+                                    if self.node.manager.get_entity(id).is_some_and(|e| e.state == AuthorityState::Local || e.state == AuthorityState::HandoffIn || e.state == AuthorityState::HandoffOut) {
                                         continue;
                                     }
                                     self.remote_entity_states.insert(id, RemoteEntityState { pos: (px, py, pz), vel: (vx, vy, vz), last_seen: now });
@@ -483,6 +496,21 @@ impl ZeusEngine {
             }
         }
 
+        if self.handoff_retry_counter % 256 == 0 {
+            let handoff_in_stuck: Vec<u64> = self.node.manager.entities.iter()
+                .filter(|(_, e)| e.state == AuthorityState::HandoffIn)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in handoff_in_stuck {
+                if let Some(e) = self.node.manager.get_entity(id) {
+                    let pos = e.pos;
+                    let vel = e.vel;
+                    self.node.manager.set_state(id, AuthorityState::Local);
+                    app_events.push(ZeusEvent::EntityArrived { id, pos, vel });
+                }
+            }
+        }
+
         self.tick_counter = self.tick_counter.wrapping_add(1);
         if self.tick_counter % 8 == 0 {
             let announce = self.discovery.generate_announce();
@@ -516,11 +544,14 @@ impl ZeusEngine {
         let cell = self.node.manager.cell().clone();
 
         for e in self.node.manager.entities.values() {
-            if e.state == crate::entity_manager::AuthorityState::Local && cell.contains(e.pos) {
+            let dominated = e.state == crate::entity_manager::AuthorityState::Local && cell.contains(e.pos);
+            let in_transit = e.state == crate::entity_manager::AuthorityState::HandoffOut;
+            let recently_departed = e.state == crate::entity_manager::AuthorityState::Remote;
+            if dominated || in_transit || recently_departed {
                 current_ids.insert(e.id);
-                let near_boundary = cell.near_any_face(e.pos, overlap_margin);
+                let near_boundary = dominated && cell.near_any_face(e.pos, overlap_margin);
                 let qp = (quantize_pos(e.pos.0), quantize_pos(e.pos.1), quantize_pos(e.pos.2));
-                if force_full || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
+                if force_full || in_transit || recently_departed || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
                     self.last_broadcast_state.insert(e.id, qp);
                     all_entries.push(BroadcastEntry { id: e.id, pos: e.pos, vel: e.vel });
                 }

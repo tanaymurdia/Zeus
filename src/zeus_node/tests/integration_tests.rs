@@ -133,7 +133,7 @@ fn test_state_machine_out_of_order() {
 
     assert_eq!(
         node.manager.get_entity(200).unwrap().state,
-        AuthorityState::Local
+        AuthorityState::HandoffIn
     );
 }
 
@@ -160,8 +160,8 @@ fn test_security_rejects_unsigned_offer() {
 
     assert_eq!(
         node.manager.get_entity(300).unwrap().state,
-        AuthorityState::Local,
-        "Valid signature failed"
+        AuthorityState::HandoffIn,
+        "Valid signature should accept offer as HandoffIn"
     );
 
     node.manager.add_entity(Entity {

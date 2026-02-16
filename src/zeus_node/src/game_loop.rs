@@ -50,10 +50,10 @@ impl<W: GameWorld> GameLoop<W> {
         let my_cell = self.engine.node.manager.cell().clone();
         for (id, entity) in &self.engine.node.manager.entities {
             if !local_ids.contains(id)
-                && (entity.state == AuthorityState::Local || entity.state == AuthorityState::HandoffOut)
+                && entity.state == AuthorityState::Local
                 && my_cell.contains(entity.pos)
             {
-                self.world.on_entity_update(*id, entity.pos, entity.vel);
+                self.world.on_entity_arrived(*id, entity.pos, entity.vel);
             }
         }
 
@@ -71,7 +71,7 @@ impl<W: GameWorld> GameLoop<W> {
                 if my_cell.contains(pos) {
                     self.engine.update_entity(*id, pos, vel);
                 } else {
-                    self.engine.update_entity(*id, pos, (0.0, 0.0, 0.0));
+                    self.engine.update_entity(*id, pos, vel);
                     evicted.push(*id);
                 }
             }
@@ -124,6 +124,7 @@ impl<W: GameWorld> GameLoop<W> {
     pub fn evict_out_of_cell_from_physics(&mut self) {
         let cell = self.engine.node.manager.cell().clone();
         let local_ids: Vec<u64> = self.world.locally_simulated_ids().iter().copied().collect();
+        let mut evicted_ids = Vec::new();
         for id in &local_ids {
             let outside = if let Some(entity) = self.engine.node.manager.entities.get(id) {
                 !cell.contains(entity.pos)
@@ -134,12 +135,19 @@ impl<W: GameWorld> GameLoop<W> {
             };
             if outside {
                 self.world.on_entity_departed(*id);
+                evicted_ids.push(*id);
             }
         }
+        for id in evicted_ids {
+            self.engine.node.manager.set_state(id, AuthorityState::HandoffOut);
+        }
+        self.engine.handoff_retry_counter = 127;
     }
 
     pub fn broadcast_status(&self) {
-        let entity_count = self.engine.node.manager.entities.len() as u16;
+        let entity_count = self.engine.node.manager.entities.values()
+            .filter(|e| e.state == AuthorityState::Local)
+            .count() as u16;
         let active_nodes = self.engine.discovery.total_node_count().max(1) as u8;
         let (custom_entity_count, map_width, ball_radius) = self.world.status_payload();
         let ec = if custom_entity_count > 0 { custom_entity_count } else { entity_count };
@@ -330,13 +338,13 @@ mod tests {
         game_loop.tick(0.016).await.unwrap();
 
         let calls = game_loop.world.get_calls();
-        let update_calls: Vec<_> = calls
+        let arrived_calls: Vec<_> = calls
             .iter()
-            .filter(|c| matches!(c, MockCall::EntityUpdate(42, _, _)))
+            .filter(|c| matches!(c, MockCall::EntityArrived(42, _, _)))
             .collect();
         assert!(
-            !update_calls.is_empty(),
-            "External entity 42 should get on_entity_update"
+            !arrived_calls.is_empty(),
+            "Local entity 42 not in physics should get on_entity_arrived (dynamic body)"
         );
     }
 
@@ -400,22 +408,22 @@ mod tests {
         game_loop.tick(0.016).await.unwrap();
 
         let calls = game_loop.world.get_calls();
-        let update_20: Vec<_> = calls
+        let arrived_20: Vec<_> = calls
             .iter()
-            .filter(|c| matches!(c, MockCall::EntityUpdate(20, _, _)))
+            .filter(|c| matches!(c, MockCall::EntityArrived(20, _, _)))
             .collect();
         assert!(
-            !update_20.is_empty(),
-            "External entity 20 should get on_entity_update"
+            !arrived_20.is_empty(),
+            "Local entity 20 not in physics should get on_entity_arrived (dynamic body)"
         );
 
-        let update_10: Vec<_> = calls
+        let arrived_10: Vec<_> = calls
             .iter()
-            .filter(|c| matches!(c, MockCall::EntityUpdate(10, _, _)))
+            .filter(|c| matches!(c, MockCall::EntityArrived(10, _, _)))
             .collect();
         assert!(
-            update_10.is_empty(),
-            "Local entity 10 should NOT get on_entity_update"
+            arrived_10.is_empty(),
+            "Local entity 10 already in physics should NOT get on_entity_arrived"
         );
     }
 

@@ -86,6 +86,7 @@ pub struct ServerStatus {
     pub node_count: Arc<AtomicU8>,
     pub map_width: Arc<AtomicU8>,
     pub ball_radius: Arc<AtomicU8>,
+    pub per_node_counts: Arc<std::sync::Mutex<std::collections::HashMap<u16, u16>>>,
 }
 
 impl ServerStatus {
@@ -255,6 +256,8 @@ fn setup_network(
     let all_connections = net.all_connections.clone();
     let rt_handle = net.runtime.handle().clone();
 
+    let per_node_counts = status.per_node_counts.clone();
+
     let spawn_reader_for_port = {
         let client_clone = client.clone();
         let entity_count = entity_count.clone();
@@ -267,6 +270,7 @@ fn setup_network(
         let all_connections = all_connections.clone();
         let octree_cells_shared = octree_cells_shared.clone();
         let octree_per_port = octree_per_port.clone();
+        let per_node_counts = per_node_counts.clone();
 
         move |port: u16, rt_handle: tokio::runtime::Handle| {
             let client_for_port = client_clone.clone();
@@ -280,6 +284,7 @@ fn setup_network(
             let all_connections = all_connections.clone();
             let octree_cells_shared = octree_cells_shared.clone();
             let octree_per_port = octree_per_port.clone();
+            let per_node_counts = per_node_counts.clone();
 
             rt_handle.spawn(async move {
                 let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
@@ -306,7 +311,11 @@ fn setup_network(
                                                 if data.len() >= 4 && data[0] == 0xAA {
                                                     let entities = ((data[1] as u16) << 8) | (data[2] as u16);
                                                     let nodes = data[3];
-                                                    entity_count.store(entities, Ordering::Relaxed);
+                                                    if let Ok(mut counts) = per_node_counts.lock() {
+                                                        counts.insert(port, entities);
+                                                        let total: u16 = counts.values().sum();
+                                                        entity_count.store(total, Ordering::Relaxed);
+                                                    }
                                                     let prev = node_count.load(Ordering::Relaxed);
                                                     if nodes > prev {
                                                         node_count.store(nodes, Ordering::Relaxed);
@@ -386,9 +395,12 @@ fn setup_network(
                                                     }
                                                     if let Ok(mut pp) = octree_per_port.lock() {
                                                         pp.insert(port, new_cells);
-                                                        let merged: Vec<CellBounds> = pp.values().flatten().cloned().collect();
+                                                        let best = pp.values()
+                                                            .max_by_key(|v| v.len())
+                                                            .cloned()
+                                                            .unwrap_or_default();
                                                         if let Ok(mut c) = octree_cells_shared.lock() {
-                                                            *c = merged;
+                                                            *c = best;
                                                         }
                                                     }
                                                 }
@@ -411,7 +423,7 @@ fn setup_network(
 
     let spawn_reader = spawn_reader_for_port.clone();
     let rth = rt_handle.clone();
-    spawn_reader(5000, rth);
+    spawn_reader(9000, rth);
 
     let spawn_reader_for_new = spawn_reader_for_port;
     let node_count_poll = status.node_count.clone();
@@ -419,11 +431,11 @@ fn setup_network(
     rt_handle.spawn(async move {
         let mut last_count = 1u8;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let current = node_count_poll.load(Ordering::Relaxed);
             if current > last_count {
                 for i in last_count..current {
-                    let port = 5000 + i as u16;
+                    let port = 9000 + i as u16;
                     let already = connected_ports_poll.lock().map(|s| s.contains(&port)).unwrap_or(false);
                     if !already {
                         let rth = tokio::runtime::Handle::current();

@@ -127,7 +127,7 @@ impl DiscoveryActor {
 
     pub fn find_peer_containing(&self, pos: (f32, f32, f32)) -> Option<&Peer> {
         self.peers.values().find(|p| {
-            p.cell.as_ref().is_some_and(|c| c.contains(pos))
+            p.cell.as_ref().is_some_and(|c| c.contains_with_margin(pos, 0.5))
         })
     }
 
