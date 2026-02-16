@@ -246,24 +246,14 @@ impl ZeusEngine {
                 .map(|(id, _)| *id)
                 .collect();
             for id in &stuck {
-                let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
                 if let Some(conn) = self.find_target_connection(*id) {
+                    let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
                     let timeout_dur = std::time::Duration::from_millis(10);
                     if let Ok(Ok(mut stream)) =
                         tokio::time::timeout(timeout_dur, conn.open_uni()).await
                     {
                         let _ = stream.write_all(&msg_bytes).await;
                         let _ = stream.finish();
-                    }
-                } else {
-                    for conn in &self.peer_connections {
-                        let timeout_dur = std::time::Duration::from_millis(10);
-                        if let Ok(Ok(mut stream)) =
-                            tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                        {
-                            let _ = stream.write_all(&msg_bytes).await;
-                            let _ = stream.finish();
-                        }
                     }
                 }
             }
@@ -533,23 +523,15 @@ impl ZeusEngine {
         }
         for id in broadcast_handoffs {
             self.node.manager.set_state(id, AuthorityState::HandoffOut);
-            let msg_bytes = build_handoff_msg(id, HandoffType::Offer, &self.node);
-            for conn in &self.peer_connections {
-                let timeout_dur = std::time::Duration::from_millis(10);
-                if let Ok(Ok(mut stream)) =
-                    tokio::time::timeout(timeout_dur, conn.open_uni()).await
-                {
-                    let _ = stream.write_all(&msg_bytes).await;
-                    let _ = stream.finish();
-                }
-            }
         }
 
         let messages: Vec<_> = self.node.outgoing_messages.drain(..).collect();
         for (id, msg_type, target_addr) in messages {
             let msg_bytes = build_handoff_msg(id, msg_type, &self.node);
             if let Some(addr) = target_addr {
-                if let Some(conn) = self.peer_connections.iter().find(|c| c.remote_address() == addr) {
+                let conn_opt = self.peer_connections.iter().find(|c| c.remote_address() == addr)
+                    .or_else(|| self.connections.iter().find(|c| c.remote_address() == addr));
+                if let Some(conn) = conn_opt {
                     let timeout_dur = std::time::Duration::from_millis(2);
                     if let Ok(Ok(mut stream)) =
                         tokio::time::timeout(timeout_dur, conn.open_uni()).await
