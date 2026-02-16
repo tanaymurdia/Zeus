@@ -47,6 +47,7 @@ impl NodeActor {
                 let is_handoff_in = matches!(current_state, Some(AuthorityState::HandoffIn));
 
                 if is_handoff_in {
+                    self.outgoing_messages.push_back((id, HandoffType::Ack, None));
                     return;
                 }
 
@@ -76,7 +77,7 @@ impl NodeActor {
                     } else {
                         let cell = self.manager.cell();
                         let is_3d = cell.y_min.is_finite();
-                        if is_3d && !cell.contains_with_margin(entity_pos, 0.2) {
+                        if is_3d && !cell.contains_with_margin(entity_pos, 0.5) {
                             return;
                         }
                         let clamped_pos = cell.clamp_inside(entity_pos, 0.5);

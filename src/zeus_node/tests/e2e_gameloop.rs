@@ -5077,7 +5077,7 @@ async fn test_reject_duplicate_offer_handoffin() {
 
     let msg2 = zeus_common::flatbuffers::root::<zeus_common::HandoffMsg>(&buf).unwrap();
     node.handle_handoff_msg(msg2, None);
-    assert_eq!(node.outgoing_messages.len(), 1, "Duplicate offer should be rejected (no second Ack)");
+    assert_eq!(node.outgoing_messages.len(), 2, "Duplicate offer for HandoffIn should re-send Ack for reliability");
 }
 
 #[tokio::test]
