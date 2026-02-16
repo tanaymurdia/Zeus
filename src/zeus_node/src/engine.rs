@@ -194,6 +194,51 @@ impl ZeusEngine {
         self.find_target_connection(entity_id)
     }
 
+    pub async fn drain_local_entities(&mut self, exclude_ids: &[u64]) -> usize {
+        let local_ids: Vec<u64> = self.node.manager.entities.iter()
+            .filter(|(id, e)| e.state == AuthorityState::Local && !exclude_ids.contains(id))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut drained = 0;
+        for id in &local_ids {
+            let entity = match self.node.manager.get_entity(*id) {
+                Some(e) => e.clone(),
+                None => continue,
+            };
+            let conn = if let Some(peer) = self.discovery.find_peer_containing(entity.pos) {
+                self.peer_connections.iter()
+                    .find(|c| c.remote_address() == peer.addr)
+                    .or_else(|| self.connections.iter().find(|c| c.remote_address() == peer.addr))
+                    .cloned()
+            } else if let Some(peer) = self.discovery.find_nearest_peer(entity.pos) {
+                let target_cell = peer.cell.as_ref().unwrap();
+                let adjusted_pos = target_cell.clamp_inside(entity.pos, 0.3);
+                if let Some(e) = self.node.manager.get_entity_mut(*id) {
+                    e.pos = adjusted_pos;
+                }
+                self.peer_connections.iter()
+                    .find(|c| c.remote_address() == peer.addr)
+                    .or_else(|| self.connections.iter().find(|c| c.remote_address() == peer.addr))
+                    .cloned()
+            } else {
+                None
+            };
+            if let Some(conn) = conn {
+                self.node.manager.set_state(*id, AuthorityState::HandoffOut);
+                let msg_bytes = build_handoff_msg(*id, HandoffType::Offer, &self.node);
+                let timeout_dur = std::time::Duration::from_millis(10);
+                if let Ok(Ok(mut stream)) =
+                    tokio::time::timeout(timeout_dur, conn.open_uni()).await
+                {
+                    let _ = stream.write_all(&msg_bytes).await;
+                    let _ = stream.finish();
+                }
+                drained += 1;
+            }
+        }
+        drained
+    }
+
     fn find_target_connection(&self, entity_id: u64) -> Option<&quinn::Connection> {
         let entity = self.node.manager.get_entity(entity_id)?;
 

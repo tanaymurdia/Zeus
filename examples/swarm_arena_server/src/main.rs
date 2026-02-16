@@ -510,6 +510,21 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
+    for port in start_port..start_port + 16 {
+        let output = std::process::Command::new("lsof")
+            .args(["-ti", &format!(":{}", port)])
+            .output();
+        if let Ok(out) = output {
+            let pids = String::from_utf8_lossy(&out.stdout);
+            for pid_str in pids.split_whitespace() {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).output();
+                }
+            }
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
     println!("[Swarm Arena Orchestrator] Starting on port {}", start_port);
 
     let mut nodes: Vec<(u8, tokio::process::Child)> = Vec::new();
@@ -663,6 +678,7 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
                         if nodes.len() > 1 && last_merge.elapsed() >= merge_cooldown {
                             if let Some(idx) = nodes.iter().position(|(nid, _)| *nid == node_id) {
                                 let (killed_id, mut child) = nodes.remove(idx);
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 let _ = child.kill().await;
                                 if let Some(port_idx) = active_ports.iter().position(|p| *p == start_port + killed_id as u16) {
                                     active_ports.remove(port_idx);
@@ -732,6 +748,9 @@ async fn run_node(
     let mut pending_split: Option<(Cell, Cell)> = None;
     let mut split_debug_ticks: i32 = -1;
     let mut tracked_ids: Vec<u64> = Vec::new();
+    let mut draining = false;
+    let mut drain_ticks: u32 = 0;
+    let mut drain_merge_requested = false;
 
     loop {
         let loop_start = std::time::Instant::now();
@@ -834,7 +853,11 @@ async fn run_node(
                     );
                 }
                 ScaleEvent::MergeRecommended => {
-                    println!("REQUEST_MERGE");
+                    if !draining && !drain_merge_requested {
+                        draining = true;
+                        drain_ticks = 0;
+                        eprintln!("[Node {}] Entering drain mode for merge", id);
+                    }
                 }
                 ScaleEvent::CellExpanded { new_cell } => {
                     let alive_peer_cells = game_loop.engine.discovery.peer_cells();
@@ -912,6 +935,36 @@ async fn run_node(
                 }
                 ScaleEvent::PeerLeft { id: pid, .. } => {
                     eprintln!("[Node {}] Peer {} left", id, pid);
+                }
+            }
+        }
+
+        if draining && !drain_merge_requested {
+            drain_ticks += 1;
+            let player_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::Local)
+                .filter(|(eid, _)| !game_loop.world.drone_ids.contains(eid))
+                .map(|(eid, _)| *eid)
+                .collect();
+            let local_drone_count = game_loop.engine.node.manager.entities.iter()
+                .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::Local && game_loop.world.drone_ids.contains(eid))
+                .count();
+            let ho_drone_count = game_loop.engine.node.manager.entities.iter()
+                .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut && game_loop.world.drone_ids.contains(eid))
+                .count();
+            if local_drone_count == 0 && ho_drone_count == 0 {
+                eprintln!("[Node {}] Drain complete after {} ticks, requesting merge", id, drain_ticks);
+                println!("REQUEST_MERGE");
+                drain_merge_requested = true;
+            } else {
+                let _ = game_loop.engine.drain_local_entities(&player_ids).await;
+                if drain_ticks % 64 == 0 {
+                    eprintln!("[Node {}] Draining: local_drones={} ho_drones={} ticks={}", id, local_drone_count, ho_drone_count, drain_ticks);
+                }
+                if drain_ticks > 512 {
+                    eprintln!("[Node {}] Drain timeout, forcing merge with {} remaining", id, local_drone_count + ho_drone_count);
+                    println!("REQUEST_MERGE");
+                    drain_merge_requested = true;
                 }
             }
         }

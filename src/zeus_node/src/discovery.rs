@@ -131,6 +131,16 @@ impl DiscoveryActor {
         })
     }
 
+    pub fn find_nearest_peer(&self, pos: (f32, f32, f32)) -> Option<&Peer> {
+        self.peers.values()
+            .filter(|p| p.cell.is_some())
+            .min_by(|a, b| {
+                let da = a.cell.as_ref().unwrap().distance_to_point(pos);
+                let db = b.cell.as_ref().unwrap().distance_to_point(pos);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
     pub fn prune_node(&mut self, node_id: u64) {
         self.peers.remove(&node_id);
         self.known_node_ids.remove(&node_id);
@@ -420,5 +430,90 @@ mod tests {
         actor.process_packet(root, src);
 
         assert_eq!(actor.total_node_count(), 4);
+    }
+
+    #[test]
+    fn test_find_nearest_peer_basic() {
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let mut actor = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr, 0);
+
+        actor.peers.insert(2, Peer {
+            id: 2,
+            addr: "127.0.0.1:9001".parse().unwrap(),
+            pos: (0.0, 0.0, 0.0),
+            load: None,
+            last_seen: Instant::now(),
+            ordinal: 1,
+            cell: Some(crate::cell::Cell::new(10.0, 20.0, 0.0, 10.0, 0.0, 10.0)),
+        });
+        actor.peers.insert(3, Peer {
+            id: 3,
+            addr: "127.0.0.1:9002".parse().unwrap(),
+            pos: (0.0, 0.0, 0.0),
+            load: None,
+            last_seen: Instant::now(),
+            ordinal: 2,
+            cell: Some(crate::cell::Cell::new(50.0, 60.0, 0.0, 10.0, 0.0, 10.0)),
+        });
+
+        let nearest = actor.find_nearest_peer((5.0, 5.0, 5.0));
+        assert!(nearest.is_some());
+        assert_eq!(nearest.unwrap().id, 2);
+    }
+
+    #[test]
+    fn test_find_nearest_peer_no_peers() {
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let actor = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr, 0);
+        assert!(actor.find_nearest_peer((5.0, 5.0, 5.0)).is_none());
+    }
+
+    #[test]
+    fn test_find_nearest_peer_skips_no_cell() {
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let mut actor = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr, 0);
+
+        actor.peers.insert(2, Peer {
+            id: 2,
+            addr: "127.0.0.1:9001".parse().unwrap(),
+            pos: (0.0, 0.0, 0.0),
+            load: None,
+            last_seen: Instant::now(),
+            ordinal: 1,
+            cell: None,
+        });
+        actor.peers.insert(3, Peer {
+            id: 3,
+            addr: "127.0.0.1:9002".parse().unwrap(),
+            pos: (0.0, 0.0, 0.0),
+            load: None,
+            last_seen: Instant::now(),
+            ordinal: 2,
+            cell: Some(crate::cell::Cell::new(50.0, 60.0, 0.0, 10.0, 0.0, 10.0)),
+        });
+
+        let nearest = actor.find_nearest_peer((5.0, 5.0, 5.0));
+        assert!(nearest.is_some());
+        assert_eq!(nearest.unwrap().id, 3);
+    }
+
+    #[test]
+    fn test_find_nearest_peer_point_inside_cell() {
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let mut actor = DiscoveryActor::new(1, (0.0, 0.0, 0.0), addr, 0);
+
+        actor.peers.insert(2, Peer {
+            id: 2,
+            addr: "127.0.0.1:9001".parse().unwrap(),
+            pos: (0.0, 0.0, 0.0),
+            load: None,
+            last_seen: Instant::now(),
+            ordinal: 1,
+            cell: Some(crate::cell::Cell::new(0.0, 20.0, 0.0, 20.0, 0.0, 20.0)),
+        });
+
+        let nearest = actor.find_nearest_peer((10.0, 10.0, 10.0));
+        assert!(nearest.is_some());
+        assert_eq!(nearest.unwrap().id, 2);
     }
 }

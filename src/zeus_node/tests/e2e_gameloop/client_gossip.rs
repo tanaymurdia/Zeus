@@ -1,0 +1,1280 @@
+use super::helpers::*;
+use std::collections::HashSet;
+use std::time::Duration;
+use tokio::time::sleep;
+use zeus_client::ZeusClient;
+use zeus_node::engine::{RemoteEntityState, ZeusConfig};
+use zeus_node::game_loop::{GameLoop, GameWorld};
+
+#[tokio::test]
+async fn test_single_client_server_round_trip() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    game_loop.world.spawn_local(1, (5.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+
+    let mut client = ZeusClient::new(9001).unwrap();
+    client.connect(server_addr).await.unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    client
+        .send_state((10.0, 0.0, 0.0), (2.0, 0.0, 0.0))
+        .await
+        .unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..10 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        game_loop.world.step_count >= 10,
+        "World should have been stepped at least 10 times, got {}",
+        game_loop.world.step_count
+    );
+
+    let entity_count = game_loop.engine.node.manager.entity_count();
+    assert!(
+        entity_count >= 1,
+        "EntityManager should have at least 1 entity (local ball), got {}",
+        entity_count
+    );
+
+    let local_entity = game_loop.engine.node.manager.get_entity(1);
+    assert!(local_entity.is_some(), "Local entity 1 should exist in EntityManager");
+
+    let conn = client.connection().unwrap();
+    let mut received_cc = false;
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(20), conn.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    let decoded = parse_0xcc_datagram(&data);
+                    if !decoded.is_empty() {
+                        received_cc = true;
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(received_cc, "Client should have received at least one 0xCC state update");
+
+    let player_arrived = game_loop
+        .world
+        .arrived
+        .contains(&9001)
+        || game_loop.engine.node.manager.get_entity(9001).is_some();
+    assert!(
+        player_arrived,
+        "Player entity 9001 should have arrived in the engine after sending state"
+    );
+}
+
+#[tokio::test]
+async fn test_multiplayer_two_clients_see_each_other() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    let mut client_a = ZeusClient::new(1_001_001).unwrap();
+    client_a.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    let mut client_b = ZeusClient::new(1_001_002).unwrap();
+    client_b.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    client_a
+        .send_state((5.0, 1.0, 0.0), (1.0, 0.0, 0.0))
+        .await
+        .unwrap();
+    client_b
+        .send_state((15.0, 2.0, 0.0), (-1.0, 0.0, 0.0))
+        .await
+        .unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..20 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let player_ids = game_loop.player_entity_ids();
+    assert!(
+        player_ids.len() >= 2,
+        "Should have at least 2 player entities, got {} (ids: {:?})",
+        player_ids.len(),
+        player_ids
+    );
+
+    let has_a = game_loop.engine.node.manager.get_entity(1_001_001).is_some();
+    let has_b = game_loop.engine.node.manager.get_entity(1_001_002).is_some();
+    assert!(has_a, "Entity 1001001 (Client A) should exist on server");
+    assert!(has_b, "Entity 1001002 (Client B) should exist on server");
+
+    let conn_a = client_a.connection().unwrap();
+    let mut a_saw_entities = HashSet::new();
+    for _ in 0..100 {
+        match tokio::time::timeout(Duration::from_millis(10), conn_a.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        a_saw_entities.insert(id);
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(
+        a_saw_entities.contains(&1_001_002),
+        "Client A should see Client B's entity (1001002) in state updates. Saw: {:?}",
+        a_saw_entities
+    );
+}
+
+#[tokio::test]
+async fn test_multiplayer_player_id_broadcast() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    let mut client_a = ZeusClient::new(2_001_001).unwrap();
+    client_a.connect(server_addr).await.unwrap();
+    let mut client_b = ZeusClient::new(2_001_002).unwrap();
+    client_b.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    client_a
+        .send_state((5.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        .await
+        .unwrap();
+    client_b
+        .send_state((15.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..20 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let player_ids = game_loop.player_entity_ids();
+    let mut bb_buf = Vec::with_capacity(3 + player_ids.len() * 8);
+    bb_buf.push(0xBB);
+    let count = player_ids.len() as u16;
+    bb_buf.push((count >> 8) as u8);
+    bb_buf.push((count & 0xFF) as u8);
+    for pid in &player_ids {
+        bb_buf.extend_from_slice(&pid.to_le_bytes());
+    }
+
+    for conn in &game_loop.engine.connections {
+        let _ = conn.send_datagram(bb_buf.clone().into());
+    }
+
+    sleep(Duration::from_millis(30)).await;
+
+    let conn_a = client_a.connection().unwrap();
+    let mut received_bb = false;
+    let mut bb_ids = HashSet::new();
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(10), conn_a.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if data.len() >= 3 && data[0] == 0xBB {
+                    received_bb = true;
+                    let c = ((data[1] as u16) << 8) | (data[2] as u16);
+                    let mut offset = 3;
+                    for _ in 0..c {
+                        if offset + 8 <= data.len() {
+                            let id =
+                                u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+                            bb_ids.insert(id);
+                            offset += 8;
+                        }
+                    }
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(
+        received_bb,
+        "Client A should receive a 0xBB player ID broadcast"
+    );
+    assert!(
+        bb_ids.len() >= 2,
+        "0xBB should contain at least 2 player IDs, got {:?}",
+        bb_ids
+    );
+}
+
+#[tokio::test]
+async fn test_spawn_request_0xdd_creates_entities() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    let mut client = ZeusClient::new(3001).unwrap();
+    client.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    for _ in 0..5 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let conn = client.connection().unwrap();
+    let dd_buf: Vec<u8> = vec![0xDD, 0x00, 0x05];
+    conn.send_datagram(dd_buf.into()).unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    game_loop.tick(0.016).await.unwrap();
+
+    let datagrams = game_loop.engine.client_datagrams.clone();
+    let mut found_dd = false;
+    for dg in &datagrams {
+        if dg.len() >= 3 && dg[0] == 0xDD {
+            found_dd = true;
+            let count = ((dg[1] as u16) << 8) | (dg[2] as u16);
+            assert_eq!(count, 5, "0xDD should request 5 entities");
+        }
+    }
+    assert!(
+        found_dd,
+        "Server should have received the 0xDD spawn request datagram"
+    );
+}
+
+#[tokio::test]
+async fn test_server_status_0xaa_broadcast() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    game_loop.world.spawn_local(1, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+    game_loop.world.spawn_local(2, (1.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+
+    let mut client = ZeusClient::new(6001).unwrap();
+    client.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    for _ in 0..10 {
+        game_loop.tick(0.016).await.unwrap();
+
+        let entity_count = game_loop.engine.node.manager.entities.len() as u16;
+        let status_bytes: [u8; 6] = [
+            0xAA,
+            (entity_count >> 8) as u8,
+            (entity_count & 0xFF) as u8,
+            1,
+            24,
+            8,
+        ];
+        for conn in &game_loop.engine.connections {
+            let _ = conn.send_datagram(status_bytes.to_vec().into());
+        }
+
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let conn = client.connection().unwrap();
+    let mut received_aa = false;
+    let mut entity_count_received = 0u16;
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(10), conn.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if data.len() >= 6 && data[0] == 0xAA {
+                    received_aa = true;
+                    entity_count_received = ((data[1] as u16) << 8) | (data[2] as u16);
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(
+        received_aa,
+        "Client should receive 0xAA status broadcast"
+    );
+    assert!(
+        entity_count_received >= 2,
+        "Status should report at least 2 entities, got {}",
+        entity_count_received
+    );
+}
+
+#[tokio::test]
+async fn test_remote_gossip_fed_to_world() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+
+    game_loop.world.spawn_local(1, (5.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+
+    game_loop.engine.remote_entity_states.insert(500, RemoteEntityState {
+        pos: (20.0, 3.0, 1.0),
+        vel: (-1.0, 0.0, 0.0),
+        last_seen: std::time::Instant::now(),
+    });
+
+    game_loop.tick(0.016).await.unwrap();
+
+    let state = game_loop.world.get_entity_state(500);
+    assert!(state.is_some(), "Remote gossip entity 500 should be fed into world as proxy");
+    let (pos, vel) = state.unwrap();
+    assert!((pos.0 - 20.0).abs() < 0.5, "Proxy 500 x should be near 20.0, got {}", pos.0);
+    assert!((vel.0 - (-1.0)).abs() < 0.5, "Proxy 500 vel.x should be near -1.0, got {}", vel.0);
+}
+
+#[tokio::test]
+async fn test_gossip_two_nodes_propagation() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world0 = TestWorld::new();
+    let mut node0 = GameLoop::new(config0, world0).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let world1 = TestWorld::new();
+    let mut node1 = GameLoop::new(config1, world1).await.unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..5 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    node0.world.spawn_local(10, (3.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+
+    for _ in 0..20 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let has_remote = node1.engine.remote_entity_states.contains_key(&10);
+    assert!(has_remote, "Node 1 should have entity 10 in remote_entity_states via gossip from Node 0");
+
+    let state = node1.world.get_entity_state(10);
+    assert!(state.is_some(), "Node 1 world should have entity 10 as kinematic proxy");
+}
+
+#[tokio::test]
+async fn test_3node_gossip_chain() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+    let node1_addr = node1.engine.endpoint.local_addr().unwrap();
+
+    let config2 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr, node1_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
+
+    sleep(Duration::from_millis(100)).await;
+
+    for _ in 0..5 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        node2.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    node0.world.spawn_local(10, (3.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+
+    for _ in 0..40 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        node2.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let node1_has = node1.engine.remote_entity_states.contains_key(&10);
+    let node2_has = node2.engine.remote_entity_states.contains_key(&10);
+
+    assert!(node1_has, "Node 1 should have entity 10 from Node 0 via direct gossip");
+    assert!(node2_has, "Node 2 should have entity 10 from Node 0 via direct gossip (full mesh)");
+}
+
+#[tokio::test]
+async fn test_gossip_no_infinite_loop() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    node0.world.spawn_local(1, (3.0, 0.0, 0.0), (0.5, 0.0, 0.0));
+
+    for _ in 0..30 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let e = node0.engine.node.manager.get_entity(1);
+    assert!(e.is_some(), "Node 0 should still own entity 1");
+    assert!(
+        !node0.engine.remote_entity_states.contains_key(&1),
+        "Node 0 should NOT have entity 1 in remote_entity_states (it owns it locally)"
+    );
+}
+
+#[tokio::test]
+async fn test_client_sees_full_world_from_any_node() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+    let node1_addr = node1.engine.endpoint.local_addr().unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    node0.world.spawn_local(100, (3.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+    node0.world.spawn_local(101, (6.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+    node1.world.spawn_local(200, (15.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+
+    for _ in 0..10 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let client = ZeusClient::new(7001).unwrap();
+    let ep = client.endpoint().clone();
+    let conn0 = ep.connect(node0_addr, "localhost").unwrap().await.unwrap();
+    let conn1 = ep.connect(node1_addr, "localhost").unwrap().await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..20 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let mut seen_ids = HashSet::new();
+    for conn in [&conn0, &conn1] {
+        for _ in 0..200 {
+            match tokio::time::timeout(Duration::from_millis(10), conn.read_datagram()).await {
+                Ok(Ok(data)) => {
+                    if !data.is_empty() && data[0] == 0xCC {
+                        for (id, _, _) in parse_0xcc_datagram(&data) {
+                            seen_ids.insert(id);
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
+
+    assert!(
+        seen_ids.contains(&100),
+        "Client should see entity 100 (local to Node 0). Saw: {:?}",
+        seen_ids
+    );
+    assert!(
+        seen_ids.contains(&101),
+        "Client should see entity 101 (local to Node 0). Saw: {:?}",
+        seen_ids
+    );
+    assert!(
+        seen_ids.contains(&200),
+        "Client should see entity 200 (local to Node 1, via direct connection). Saw: {:?}",
+        seen_ids
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_4node_full_world() {
+    let mut nodes: Vec<GameLoop<TestWorld>> = Vec::new();
+    let mut addrs = Vec::new();
+
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let n0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    addrs.push(n0.engine.endpoint.local_addr().unwrap());
+    nodes.push(n0);
+
+    for _i in 1..4u8 {
+        let cfg = ZeusConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            seed_addrs: addrs.clone(),
+            boundary: 100.0,
+            margin: 5.0,
+            ordinal: 0,
+            lower_boundary: 0.0,
+            cell: None,
+        };
+        let n = GameLoop::new(cfg, TestWorld::new()).await.unwrap();
+        addrs.push(n.engine.endpoint.local_addr().unwrap());
+        nodes.push(n);
+    }
+
+    sleep(Duration::from_millis(100)).await;
+
+    for _ in 0..5 {
+        for node in nodes.iter_mut() {
+            node.tick(0.016).await.unwrap();
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    for i in 0..4 {
+        for j in 0..5 {
+            let id = (i * 100 + j + 1) as u64;
+            let x = (i as f32) * 5.0 + j as f32;
+            nodes[i].world.spawn_local(id, (x, 1.0, 0.0), (0.0, 0.0, 0.0));
+        }
+    }
+
+    for _ in 0..60 {
+        for node in nodes.iter_mut() {
+            node.tick(0.016).await.unwrap();
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let client = ZeusClient::new(8001).unwrap();
+    let ep = client.endpoint().clone();
+    let mut client_conns = Vec::new();
+    for addr in &addrs {
+        client_conns.push(ep.connect(*addr, "localhost").unwrap().await.unwrap());
+    }
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..30 {
+        for node in nodes.iter_mut() {
+            node.tick(0.016).await.unwrap();
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let mut seen_ids = HashSet::new();
+    for conn in &client_conns {
+        for _ in 0..500 {
+            match tokio::time::timeout(Duration::from_millis(10), conn.read_datagram()).await {
+                Ok(Ok(data)) => {
+                    if !data.is_empty() && data[0] == 0xCC {
+                        for (id, _, _) in parse_0xcc_datagram(&data) {
+                            seen_ids.insert(id);
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+    }
+
+    assert!(
+        seen_ids.len() >= 15,
+        "Client should see at least 15 entities from all 4 nodes, got {} (ids: {:?})",
+        seen_ids.len(),
+        seen_ids
+    );
+
+    for i in 0..4 {
+        let base = (i * 100 + 1) as u64;
+        let has_any = (base..base + 5).any(|id| seen_ids.contains(&id));
+        assert!(
+            has_any,
+            "Client should see at least one entity from node {} (range {}..{}). Saw: {:?}",
+            i, base, base + 5, seen_ids
+        );
+    }
+
+    let mut no_dupes = true;
+    for i in 0..4 {
+        for j in 0..5 {
+            let id = (i * 100 + j + 1) as u64;
+            let count = seen_ids.iter().filter(|&&x| x == id).count();
+            if count > 1 {
+                no_dupes = false;
+            }
+        }
+    }
+    assert!(no_dupes, "No duplicate entity IDs should exist");
+}
+
+#[tokio::test]
+async fn test_gossip_gates_boundary_shift() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 2.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    node0.world.spawn_local(1, (15.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 2.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+
+    sleep(Duration::from_millis(200)).await;
+
+    for _ in 0..10 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let e = node0.engine.node.manager.get_entity(1);
+    assert!(
+        e.is_some(),
+        "Entity 1 should still exist on node0"
+    );
+    if let Some(e) = e {
+        assert_eq!(
+            e.state,
+            zeus_node::entity_manager::AuthorityState::Local,
+            "Entity 1 should still be Local on node0 before boundary shrinks"
+        );
+    }
+
+    for _ in 0..50 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let peers_discovered = node0.engine.discovery.peers.len() >= 1
+        || node1.engine.discovery.peers.len() >= 1;
+    assert!(
+        peers_discovered,
+        "Nodes should have discovered each other as peers (n0={}, n1={})",
+        node0.engine.discovery.peers.len(),
+        node1.engine.discovery.peers.len()
+    );
+
+    let gossip_flowing = !node0.engine.remote_entity_states.is_empty()
+        || !node1.engine.remote_entity_states.is_empty();
+
+    if gossip_flowing {
+        node0.set_boundary(10.0);
+        for _ in 0..60 {
+            node0.tick(0.016).await.unwrap();
+            node1.tick(0.016).await.unwrap();
+            sleep(Duration::from_millis(5)).await;
+        }
+        let e = node0.engine.node.manager.get_entity(1);
+        let handed_off = e
+            .map(|e| e.state != zeus_node::entity_manager::AuthorityState::Local)
+            .unwrap_or(true);
+        let on_node1 = node1.engine.node.manager.get_entity(1).is_some();
+        assert!(
+            handed_off || on_node1,
+            "After gossip is flowing and boundary shrinks, entity should hand off"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_full_mesh_1hop_gossip_3nodes() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+    let node1_addr = node1.engine.endpoint.local_addr().unwrap();
+
+    let config2 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr, node1_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 2,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node2 = GameLoop::new(config2, TestWorld::new()).await.unwrap();
+
+    sleep(Duration::from_millis(100)).await;
+
+    for _ in 0..5 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        node2.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    node0.world.spawn_local(10, (3.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+    node1.world.spawn_local(20, (50.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+    node2.world.spawn_local(30, (80.0, 0.0, 0.0), (1.0, 0.0, 0.0));
+
+    for _ in 0..40 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        node2.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        node2.engine.remote_entity_states.contains_key(&10),
+        "Node 2 should have entity 10 from Node 0 via direct connection (1-hop)"
+    );
+    assert!(
+        node0.engine.remote_entity_states.contains_key(&30),
+        "Node 0 should have entity 30 from Node 2 via direct connection (1-hop)"
+    );
+    assert!(
+        node0.engine.remote_entity_states.contains_key(&20),
+        "Node 0 should have entity 20 from Node 1 via direct connection (1-hop)"
+    );
+}
+
+#[tokio::test]
+async fn test_sdk_broadcast_status() {
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut game_loop = GameLoop::new(config, TestWorld::new()).await.unwrap();
+    let node_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    game_loop.world.spawn_local(1_000_001, (5.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+    game_loop.world.spawn_local(42, (10.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+
+    let client = ZeusClient::new(20001).unwrap();
+    let ep = client.endpoint().clone();
+    let conn = ep.connect(node_addr, "localhost").unwrap().await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..10 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    game_loop.broadcast_status();
+
+    sleep(Duration::from_millis(50)).await;
+
+    let mut saw_aa = false;
+    let mut saw_bb = false;
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(20), conn.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if data.len() >= 4 && data[0] == 0xAA {
+                    saw_aa = true;
+                    let nodes = data[3];
+                    assert!(nodes >= 1, "Node count should be at least 1");
+                } else if data.len() >= 3 && data[0] == 0xBB {
+                    saw_bb = true;
+                    let count = ((data[1] as u16) << 8) | (data[2] as u16);
+                    assert_eq!(count, 1, "Should have exactly 1 player entity (>= 1_000_000)");
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(saw_aa, "Client should receive 0xAA status broadcast via broadcast_status()");
+    assert!(saw_bb, "Client should receive 0xBB player IDs via broadcast_status()");
+}
+
+#[tokio::test]
+async fn test_node_only_broadcasts_local_to_clients() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 5.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+
+    sleep(Duration::from_millis(50)).await;
+
+    node0.world.spawn_local(100, (3.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+    node1.world.spawn_local(200, (50.0, 0.0, 0.0), (0.0, 0.0, 0.0));
+
+    let client = ZeusClient::new(30001).unwrap();
+    let ep = client.endpoint().clone();
+    let conn0 = ep.connect(node0_addr, "localhost").unwrap().await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..30 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let mut seen_from_node0 = HashSet::new();
+    for _ in 0..200 {
+        match tokio::time::timeout(Duration::from_millis(10), conn0.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        seen_from_node0.insert(id);
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(
+        seen_from_node0.contains(&100),
+        "Node 0 should broadcast its own entity 100 to client"
+    );
+    assert!(
+        !seen_from_node0.contains(&200),
+        "Node 0 should NOT broadcast Node 1's entity 200 to client (full mesh: each node only sends local)"
+    );
+}
+
+#[tokio::test]
+async fn test_client_sees_all_during_split() {
+    let config0 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 100.0,
+        margin: 2.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node0 = GameLoop::new(config0, TestWorld::new()).await.unwrap();
+    let node0_addr = node0.engine.endpoint.local_addr().unwrap();
+
+    for i in 0..6u64 {
+        let x = 2.0 + (i as f32) * 4.0;
+        node0.world.spawn_local(i + 1, (x, 0.0, 0.0), (0.0, 0.0, 0.0));
+    }
+
+    let config1 = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![node0_addr],
+        boundary: 100.0,
+        margin: 2.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: None,
+    };
+    let mut node1 = GameLoop::new(config1, TestWorld::new()).await.unwrap();
+
+    sleep(Duration::from_millis(100)).await;
+
+    for _ in 0..10 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let node1_addr = node1.engine.endpoint.local_addr().unwrap();
+    let mut client = ZeusClient::new(11001).unwrap();
+    client.connect(node0_addr).await.unwrap();
+    let mut client2 = ZeusClient::new(11002).unwrap();
+    client2.connect(node1_addr).await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    node0.set_boundary(10.0);
+
+    for _ in 0..80 {
+        node0.tick(0.016).await.unwrap();
+        node1.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    let conn0 = client.connection().unwrap();
+    let conn1 = client2.connection().unwrap();
+    let mut seen_ids = HashSet::new();
+    for _ in 0..300 {
+        match tokio::time::timeout(Duration::from_millis(10), conn0.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        seen_ids.insert(id);
+                    }
+                }
+            }
+            _ => {}
+        }
+        match tokio::time::timeout(Duration::from_millis(10), conn1.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        seen_ids.insert(id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut missing = Vec::new();
+    for id in 1..=6u64 {
+        if !seen_ids.contains(&id) {
+            missing.push(id);
+        }
+    }
+
+    assert!(
+        missing.len() <= 1,
+        "Client should see at least 5 of 6 entities during/after split. Missing: {:?}, Seen: {:?}",
+        missing, seen_ids
+    );
+}
+
+#[tokio::test]
+async fn test_no_dual_broadcast_during_handoff() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 25.0, 0.0, 50.0);
+    let cell_b = Cell::new(0.0, 50.0, 25.0, 50.0, 0.0, 50.0);
+
+    let config_a = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell_a.clone()),
+    };
+    let mut world_a = TestWorld::new();
+    world_a.spawn_local(1, (25.0, 24.5, 25.0), (0.0, 5.0, 0.0));
+    let mut node_a = GameLoop::new(config_a, world_a).await.unwrap();
+    let addr_a = node_a.engine.endpoint.local_addr().unwrap();
+    node_a.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 1, pos: (25.0, 24.5, 25.0), vel: (0.0, 5.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+
+    let config_b = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: vec![addr_a],
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 1,
+        lower_boundary: 0.0,
+        cell: Some(cell_b.clone()),
+    };
+    let world_b = TestWorld::new();
+    let mut node_b = GameLoop::new(config_b, world_b).await.unwrap();
+
+    let mut client = ZeusClient::new(999_999).unwrap();
+    client.connect(addr_a).await.unwrap();
+    let conn_b_client = {
+        let addr_b = node_b.engine.endpoint.local_addr().unwrap();
+        let mut c2 = ZeusClient::new(999_998).unwrap();
+        c2.connect(addr_b).await.unwrap();
+        c2
+    };
+    sleep(Duration::from_millis(30)).await;
+
+    for _ in 0..100 {
+        node_a.tick(0.016).await.unwrap();
+        node_b.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let a_has = node_a.engine.node.manager.get_entity(1);
+    let b_has = node_b.engine.node.manager.get_entity(1);
+    let a_local = a_has.is_some_and(|e| e.state == AuthorityState::Local);
+    let b_local = b_has.is_some_and(|e| e.state == AuthorityState::Local);
+
+    assert!(a_local || b_local, "Entity 1 must be Local on exactly one node");
+    assert!(!(a_local && b_local), "Entity 1 must NOT be Local on both nodes simultaneously");
+    drop(client);
+    drop(conn_b_client);
+}
+
+#[tokio::test]
+async fn test_handoff_in_not_broadcast_to_clients() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell.clone()),
+    };
+    let world = TestWorld::new();
+    let mut node = GameLoop::new(config, world).await.unwrap();
+
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 10, pos: (25.0, 25.0, 25.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::Local, verifying_key: None,
+    });
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 20, pos: (25.0, 25.0, 25.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::HandoffIn, verifying_key: None,
+    });
+    node.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
+        id: 30, pos: (25.0, 25.0, 25.0), vel: (0.0, 0.0, 0.0),
+        state: AuthorityState::HandoffOut, verifying_key: None,
+    });
+
+    let mut client = ZeusClient::new(888_888).unwrap();
+    client.connect(node.engine.endpoint.local_addr().unwrap()).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    for _ in 0..5 {
+        node.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let conn = client.connection().unwrap();
+    let mut seen_ids: HashSet<u64> = HashSet::new();
+    for _ in 0..50 {
+        match tokio::time::timeout(Duration::from_millis(10), conn.read_datagram()).await {
+            Ok(Ok(data)) => {
+                if !data.is_empty() && data[0] == 0xCC {
+                    for (id, _, _) in parse_0xcc_datagram(&data) {
+                        seen_ids.insert(id);
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+
+    assert!(seen_ids.contains(&10), "Local entity 10 should be broadcast");
+    assert!(seen_ids.contains(&30), "HandoffOut entity 30 should be broadcast (parent keeps broadcasting during transit)");
+    assert!(seen_ids.contains(&20), "HandoffIn entity 20 should be broadcast (child bridges gap while awaiting Commit)");
+}
+
+#[tokio::test]
+async fn test_client_state_bypasses_handoff_in() {
+    use zeus_node::cell::Cell;
+    use zeus_node::entity_manager::AuthorityState;
+
+    let cell = Cell::new(0.0, 50.0, 0.0, 50.0, 0.0, 50.0);
+    let config = ZeusConfig {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        seed_addrs: Vec::new(),
+        boundary: 50.0,
+        margin: 1.0,
+        ordinal: 0,
+        lower_boundary: 0.0,
+        cell: Some(cell),
+    };
+    let world = TestWorld::new();
+    let mut game_loop = GameLoop::new(config, world).await.unwrap();
+    let server_addr = game_loop.engine.endpoint.local_addr().unwrap();
+
+    let mut client = ZeusClient::new(1_000_001).unwrap();
+    client.connect(server_addr).await.unwrap();
+    sleep(Duration::from_millis(30)).await;
+
+    client.send_state((25.0, 25.0, 25.0), (1.0, 0.0, 0.0)).await.unwrap();
+    sleep(Duration::from_millis(50)).await;
+
+    for _ in 0..10 {
+        game_loop.tick(0.016).await.unwrap();
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let entity = game_loop.engine.node.manager.get_entity(1_000_001);
+    assert!(entity.is_some(), "Player entity should exist after sending state");
+    assert_eq!(entity.unwrap().state, AuthorityState::Local,
+        "Player entity from client should be Local immediately (not HandoffIn)");
+}
