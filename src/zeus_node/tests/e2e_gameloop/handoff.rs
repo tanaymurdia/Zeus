@@ -1065,8 +1065,8 @@ async fn test_handoff_retry_fires_immediately_after_eviction() {
     gl.set_cell(keep_cell);
     gl.evict_out_of_cell_from_physics();
 
-    assert_eq!(gl.engine.handoff_retry_counter, 127,
-        "After eviction, retry counter should be set to 127 so next tick triggers offers");
+    assert_eq!(gl.engine.handoff_retry_counter, 0,
+        "After eviction, retry counter is reset to 0 (eviction no longer sets 127)");
 }
 
 #[tokio::test]

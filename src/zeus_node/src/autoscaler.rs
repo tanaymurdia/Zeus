@@ -93,7 +93,12 @@ impl AutoScaler {
             events.push(ScaleEvent::PeerLeft { id: *id, cell: dead_cell.clone() });
             if let Some(ref dc) = dead_cell {
                 if my_cell.shares_face(dc) {
-                    if let Some(expanded) = my_cell.expand_toward(dc) {
+                    if let Some(mut expanded) = my_cell.expand_toward(dc) {
+                        for (pid, pcell) in current_peer_cells.iter() {
+                            if *pid != *id {
+                                expanded = expanded.clip_against(pcell);
+                            }
+                        }
                         events.push(ScaleEvent::CellExpanded {
                             new_cell: expanded,
                             dead_peer_id: *id,

@@ -211,11 +211,6 @@ impl ZeusEngine {
                     .or_else(|| self.connections.iter().find(|c| c.remote_address() == peer.addr))
                     .cloned()
             } else if let Some(peer) = self.discovery.find_nearest_peer(entity.pos) {
-                let target_cell = peer.cell.as_ref().unwrap();
-                let adjusted_pos = target_cell.clamp_inside(entity.pos, 0.3);
-                if let Some(e) = self.node.manager.get_entity_mut(*id) {
-                    e.pos = adjusted_pos;
-                }
                 self.peer_connections.iter()
                     .find(|c| c.remote_address() == peer.addr)
                     .or_else(|| self.connections.iter().find(|c| c.remote_address() == peer.addr))
@@ -281,6 +276,7 @@ impl ZeusEngine {
     pub async fn tick(&mut self, dt: f32) -> Result<Vec<ZeusEvent>, Box<dyn std::error::Error>> {
         let mut app_events = Vec::new();
         self.client_datagrams.clear();
+        self.node.manager.tick_grace();
 
         let mut exit_candidates = self.node.update(dt);
         self.handoff_retry_counter += 1;
@@ -303,14 +299,22 @@ impl ZeusEngine {
                 }
             }
         }
-        if self.handoff_retry_counter >= 1024 {
+        if self.peer_connections.is_empty() && self.connections.is_empty() {
+            let orphaned: Vec<u64> = self.node.manager.entities.iter()
+                .filter(|(_, e)| e.state == AuthorityState::HandoffOut)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in &orphaned {
+                self.node.manager.set_state(*id, AuthorityState::Local);
+            }
+        }
+        if self.handoff_retry_counter >= 512 {
             let long_stuck: Vec<u64> = self.node.manager.entities.iter()
                 .filter(|(_, e)| e.state == AuthorityState::HandoffOut && !my_cell.contains(e.pos))
                 .map(|(id, _)| *id)
                 .collect();
             for id in &long_stuck {
-                self.node.manager.remove_entity(*id);
-                app_events.push(ZeusEvent::EntityDeparted { id: *id });
+                self.node.manager.set_state(*id, AuthorityState::Local);
             }
             self.handoff_retry_counter = 0;
         }
@@ -356,6 +360,16 @@ impl ZeusEngine {
                     } else {
                         self.client_connections.push(conn.clone());
                         self.last_broadcast_state.clear();
+                        let cell = self.node.manager.cell().clone();
+                        let mut cell_buf = Vec::with_capacity(26);
+                        cell_buf.push(0xEE);
+                        cell_buf.push(1u8);
+                        cell_buf.extend_from_slice(&cell.serialize());
+                        let _ = conn.send_datagram(bytes::Bytes::from(cell_buf));
+                        let ec = self.node.manager.entity_count() as u16;
+                        let active_nodes = (self.discovery.peers.len() + 1).max(1) as u8;
+                        let status: [u8; 4] = [0xAA, (ec >> 8) as u8, (ec & 0xFF) as u8, active_nodes];
+                        let _ = conn.send_datagram(bytes::Bytes::from(status.to_vec()));
                     }
                     self.connections.push(conn.clone());
                     let tx_reader = self.network_tx.clone();
@@ -415,6 +429,7 @@ impl ZeusEngine {
                                         || old_state == Some(AuthorityState::Remote)
                                         || old_state == Some(AuthorityState::HandoffIn));
                                 if became_local {
+                                    self.node.manager.mark_arrived(id);
                                     if let Some(e) = self.node.manager.get_entity(id) {
                                         app_events.push(ZeusEvent::EntityArrived {
                                             id: e.id,
@@ -568,7 +583,11 @@ impl ZeusEngine {
             if let Some(conn) = self.find_target_connection(*id) {
                 targeted_handoffs.push((*id, conn.clone()));
             } else if !self.peer_connections.is_empty() {
-                broadcast_handoffs.push(*id);
+                if let Some(entity) = self.node.manager.get_entity(*id) {
+                    if !my_cell.contains_with_margin(entity.pos, 2.0) {
+                        broadcast_handoffs.push(*id);
+                    }
+                }
             }
         }
         for (id, conn) in targeted_handoffs {
@@ -602,7 +621,10 @@ impl ZeusEngine {
                     }
                 }
             } else {
-                for conn in &self.peer_connections {
+                let mut sent_addrs = std::collections::HashSet::new();
+                for conn in self.peer_connections.iter().chain(self.connections.iter()) {
+                    let addr = conn.remote_address();
+                    if !sent_addrs.insert(addr) { continue; }
                     let timeout_dur = std::time::Duration::from_millis(2);
                     if let Ok(Ok(mut stream)) =
                         tokio::time::timeout(timeout_dur, conn.open_uni()).await
@@ -657,14 +679,13 @@ impl ZeusEngine {
         let cell = self.node.manager.cell().clone();
 
         for e in self.node.manager.entities.values() {
-            let dominated = e.state == crate::entity_manager::AuthorityState::Local && cell.contains(e.pos);
+            let is_local = e.state == crate::entity_manager::AuthorityState::Local;
             let in_transit = e.state == crate::entity_manager::AuthorityState::HandoffOut;
-            let arriving = e.state == crate::entity_manager::AuthorityState::HandoffIn;
-            if dominated || in_transit || arriving {
+            if is_local || in_transit {
                 current_ids.insert(e.id);
-                let near_boundary = dominated && cell.near_any_face(e.pos, overlap_margin);
+                let near_boundary = is_local && cell.near_any_face(e.pos, overlap_margin);
                 let qp = (quantize_pos(e.pos.0), quantize_pos(e.pos.1), quantize_pos(e.pos.2));
-                if force_full || in_transit || arriving || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
+                if force_full || in_transit || near_boundary || self.last_broadcast_state.get(&e.id) != Some(&qp) {
                     self.last_broadcast_state.insert(e.id, qp);
                     all_entries.push(BroadcastEntry { id: e.id, pos: e.pos, vel: e.vel });
                 }

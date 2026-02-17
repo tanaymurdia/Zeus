@@ -316,10 +316,7 @@ fn setup_network(
                                                         let total: u16 = counts.values().sum();
                                                         entity_count.store(total, Ordering::Relaxed);
                                                     }
-                                                    let prev = node_count.load(Ordering::Relaxed);
-                                                    if nodes > prev {
-                                                        node_count.store(nodes, Ordering::Relaxed);
-                                                    }
+                                                    node_count.store(nodes, Ordering::Relaxed);
                                                     if data.len() >= 6 {
                                                         map_width.store(data[4], Ordering::Relaxed);
                                                         ball_radius.store(data[5], Ordering::Relaxed);
@@ -468,26 +465,28 @@ fn setup_network(
 
     let spawn_reader = spawn_reader_for_port.clone();
     let rth = rt_handle.clone();
+    if let Ok(mut ports) = connected_ports.lock() {
+        ports.insert(9000);
+    }
     spawn_reader(9000, rth);
 
     let spawn_reader_for_new = spawn_reader_for_port;
     let node_count_poll = status.node_count.clone();
     let connected_ports_poll = connected_ports.clone();
     rt_handle.spawn(async move {
-        let mut last_count = 1u8;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             let current = node_count_poll.load(Ordering::Relaxed);
-            if current > last_count {
-                for i in last_count..current {
-                    let port = 9000 + i as u16;
-                    let already = connected_ports_poll.lock().map(|s| s.contains(&port)).unwrap_or(false);
-                    if !already {
-                        let rth = tokio::runtime::Handle::current();
-                        spawn_reader_for_new(port, rth);
+            for i in 0..current {
+                let port = 9000 + i as u16;
+                let already = connected_ports_poll.lock().map(|s| s.contains(&port)).unwrap_or(false);
+                if !already {
+                    if let Ok(mut ports) = connected_ports_poll.lock() {
+                        ports.insert(port);
                     }
+                    let rth = tokio::runtime::Handle::current();
+                    spawn_reader_for_new(port, rth);
                 }
-                last_count = current;
             }
         }
     });

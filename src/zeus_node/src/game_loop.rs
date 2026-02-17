@@ -56,8 +56,11 @@ impl<W: GameWorld> GameLoop<W> {
         }
 
         for (id, remote) in &self.engine.remote_entity_states {
-            if !local_ids.contains(id) && !self.engine.node.manager.entities.contains_key(id) {
-                self.world.on_entity_update(*id, remote.pos, remote.vel);
+            if !local_ids.contains(id) {
+                let is_managed = self.engine.node.manager.entities.contains_key(id);
+                if !is_managed {
+                    self.world.on_entity_update(*id, remote.pos, remote.vel);
+                }
             }
         }
 
@@ -111,26 +114,7 @@ impl<W: GameWorld> GameLoop<W> {
     }
 
     pub fn evict_out_of_cell_from_physics(&mut self) {
-        let cell = self.engine.node.manager.cell().clone();
-        let local_ids: Vec<u64> = self.world.locally_simulated_ids().iter().copied().collect();
-        let mut evicted_ids = Vec::new();
-        for id in &local_ids {
-            let outside = if let Some(entity) = self.engine.node.manager.entities.get(id) {
-                !cell.contains(entity.pos)
-            } else if let Some((pos, _)) = self.world.get_entity_state(*id) {
-                !cell.contains(pos)
-            } else {
-                false
-            };
-            if outside {
-                self.world.on_entity_departed(*id);
-                evicted_ids.push(*id);
-            }
-        }
-        for id in evicted_ids {
-            self.engine.node.manager.set_state(id, AuthorityState::HandoffOut);
-        }
-        self.engine.handoff_retry_counter = 127;
+        self.engine.handoff_retry_counter = 0;
     }
 
     pub fn broadcast_status(&self) {

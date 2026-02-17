@@ -47,6 +47,17 @@ impl NodeActor {
                 let is_handoff_in = matches!(current_state, Some(AuthorityState::HandoffIn));
 
                 if is_handoff_in {
+                    if let Some(ghost) = msg.state() {
+                        let pos = ghost.position().unwrap();
+                        let vel = ghost.velocity().unwrap();
+                        let entity_pos = (pos.x(), pos.y(), pos.z());
+                        let entity_vel = (vel.x(), vel.y(), vel.z());
+                        if let Some(mut e) = self.manager.get_entity(id).cloned() {
+                            e.pos = entity_pos;
+                            e.vel = entity_vel;
+                            self.manager.add_entity(e);
+                        }
+                    }
                     self.outgoing_messages.push_back((id, HandoffType::Ack, None));
                     return;
                 }
@@ -77,14 +88,13 @@ impl NodeActor {
                     } else {
                         let cell = self.manager.cell();
                         let is_3d = cell.y_min.is_finite();
-                        if is_3d && !cell.contains_with_margin(entity_pos, 0.5) {
+                        if is_3d && !cell.contains_with_margin(entity_pos, 15.0) {
                             return;
                         }
-                        let clamped_pos = cell.clamp_inside(entity_pos, 0.5);
                         let was_remote = matches!(current_state, Some(AuthorityState::Remote));
                         let entity = Entity {
                             id,
-                            pos: clamped_pos,
+                            pos: entity_pos,
                             vel: (vel.x(), vel.y(), vel.z()),
                             state: AuthorityState::HandoffIn,
                             verifying_key: known_key,
@@ -106,6 +116,17 @@ impl NodeActor {
             }
             HandoffType::Commit => {
                 if let Some(AuthorityState::HandoffIn) = current_state {
+                    if let Some(ghost) = msg.state() {
+                        if let (Some(pos), Some(vel)) = (ghost.position(), ghost.velocity()) {
+                            if let Some(mut e) = self.manager.get_entity(id).cloned() {
+                                e.pos = (pos.x(), pos.y(), pos.z());
+                                e.vel = (vel.x(), vel.y(), vel.z());
+                                e.state = AuthorityState::Local;
+                                self.manager.add_entity(e);
+                                return;
+                            }
+                        }
+                    }
                     self.manager.set_state(id, AuthorityState::Local);
                 }
             }
@@ -194,5 +215,74 @@ mod tests {
         node.handle_handoff_msg(msg, None);
         let e = node.manager.get_entity(99).unwrap();
         assert_eq!(e.state, AuthorityState::Local);
+    }
+
+    #[test]
+    fn test_commit_updates_position_from_ghost() {
+        let mut node = NodeActor::new(0.0, 5.0, 0.0);
+
+        let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
+        let pos = Vec3::new(10.0, 5.0, 3.0);
+        let vel = Vec3::new(2.0, 1.0, -0.5);
+        let sig = builder.create_vector(&[0u8; 64]);
+        let ghost = zeus_common::Ghost::create(
+            &mut builder,
+            &GhostArgs {
+                entity_id: 42,
+                position: Some(&pos),
+                velocity: Some(&vel),
+                signature: Some(sig),
+            },
+        );
+        let msg = zeus_common::HandoffMsg::create(
+            &mut builder,
+            &zeus_common::HandoffMsgArgs {
+                entity_id: 42,
+                type_: HandoffType::Offer,
+                state: Some(ghost),
+            },
+        );
+        builder.finish(msg, None);
+        let buf = builder.finished_data().to_vec();
+        let msg = zeus_common::flatbuffers::root::<HandoffMsg>(&buf).unwrap();
+        node.handle_handoff_msg(msg, None);
+
+        let e = node.manager.get_entity(42).unwrap();
+        assert_eq!(e.state, AuthorityState::HandoffIn);
+        assert!((e.pos.0 - 10.0).abs() < 0.01);
+        node.outgoing_messages.clear();
+
+        let mut builder = zeus_common::flatbuffers::FlatBufferBuilder::new();
+        let updated_pos = Vec3::new(15.0, 6.0, 2.5);
+        let updated_vel = Vec3::new(1.8, 0.9, -0.4);
+        let sig = builder.create_vector(&[0u8; 64]);
+        let ghost = zeus_common::Ghost::create(
+            &mut builder,
+            &GhostArgs {
+                entity_id: 42,
+                position: Some(&updated_pos),
+                velocity: Some(&updated_vel),
+                signature: Some(sig),
+            },
+        );
+        let msg = zeus_common::HandoffMsg::create(
+            &mut builder,
+            &zeus_common::HandoffMsgArgs {
+                entity_id: 42,
+                type_: HandoffType::Commit,
+                state: Some(ghost),
+            },
+        );
+        builder.finish(msg, None);
+        let buf = builder.finished_data().to_vec();
+        let msg = zeus_common::flatbuffers::root::<HandoffMsg>(&buf).unwrap();
+        node.handle_handoff_msg(msg, None);
+
+        let e = node.manager.get_entity(42).unwrap();
+        assert_eq!(e.state, AuthorityState::Local);
+        assert!((e.pos.0 - 15.0).abs() < 0.01, "Position should be updated from Commit ghost. got {}", e.pos.0);
+        assert!((e.pos.1 - 6.0).abs() < 0.01, "Position Y should be updated from Commit ghost. got {}", e.pos.1);
+        assert!((e.vel.0 - 1.8).abs() < 0.01, "Velocity should be updated from Commit ghost. got {}", e.vel.0);
+        assert!((e.vel.2 - (-0.4)).abs() < 0.01, "Velocity Z should be updated from Commit ghost. got {}", e.vel.2);
     }
 }

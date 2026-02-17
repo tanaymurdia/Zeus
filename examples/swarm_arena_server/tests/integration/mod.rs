@@ -3,3 +3,7 @@ mod autoscaler;
 mod basic;
 mod drain_merge;
 mod split_flow;
+mod physics_prediction;
+mod client_e2e;
+mod handoff_physics;
+mod client_simulation;

@@ -10,3 +10,5 @@ mod handoff;
 mod multinode;
 #[path = "e2e_gameloop/split.rs"]
 mod split;
+#[path = "e2e_gameloop/timing.rs"]
+mod timing;

@@ -190,6 +190,49 @@ impl Cell {
         ]
     }
 
+    pub fn clip_against(&self, keep_out: &Cell) -> Cell {
+        let x_ol = self.x_min < keep_out.x_max && self.x_max > keep_out.x_min;
+        let y_ol = self.y_min < keep_out.y_max && self.y_max > keep_out.y_min;
+        let z_ol = self.z_min < keep_out.z_max && self.z_max > keep_out.z_min;
+        if !(x_ol && y_ol && z_ol) {
+            return self.clone();
+        }
+        let mut best = self.clone();
+        let mut best_vol = 0.0f32;
+        if self.x_max > keep_out.x_min && self.x_min < keep_out.x_min {
+            let c = Cell::new(self.x_min, keep_out.x_min, self.y_min, self.y_max, self.z_min, self.z_max);
+            let v = c.volume();
+            if v > best_vol { best = c; best_vol = v; }
+        }
+        if self.x_min < keep_out.x_max && self.x_max > keep_out.x_max {
+            let c = Cell::new(keep_out.x_max, self.x_max, self.y_min, self.y_max, self.z_min, self.z_max);
+            let v = c.volume();
+            if v > best_vol { best = c; best_vol = v; }
+        }
+        if self.y_max > keep_out.y_min && self.y_min < keep_out.y_min {
+            let c = Cell::new(self.x_min, self.x_max, self.y_min, keep_out.y_min, self.z_min, self.z_max);
+            let v = c.volume();
+            if v > best_vol { best = c; best_vol = v; }
+        }
+        if self.y_min < keep_out.y_max && self.y_max > keep_out.y_max {
+            let c = Cell::new(self.x_min, self.x_max, keep_out.y_max, self.y_max, self.z_min, self.z_max);
+            let v = c.volume();
+            if v > best_vol { best = c; best_vol = v; }
+        }
+        if self.z_max > keep_out.z_min && self.z_min < keep_out.z_min {
+            let c = Cell::new(self.x_min, self.x_max, self.y_min, self.y_max, self.z_min, keep_out.z_min);
+            let v = c.volume();
+            if v > best_vol { best = c; best_vol = v; }
+        }
+        if self.z_min < keep_out.z_max && self.z_max > keep_out.z_max {
+            let c = Cell::new(self.x_min, self.x_max, self.y_min, self.y_max, keep_out.z_max, self.z_max);
+            let v = c.volume();
+            if v > best_vol { best = c; best_vol = v; }
+        }
+        if best_vol <= 0.0 { return self.clone(); }
+        best
+    }
+
     pub fn serialize(&self) -> [u8; 24] {
         let mut buf = [0u8; 24];
         buf[0..4].copy_from_slice(&self.x_min.to_le_bytes());
@@ -402,6 +445,42 @@ mod tests {
         let (a, b) = cell.split_binary(Face::XPos, 20.0);
         assert!(a.volume() < b.volume());
         assert!((a.x_max - 20.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_clip_against_no_overlap() {
+        let a = Cell::new(0.0, 10.0, 0.0, 10.0, 0.0, 10.0);
+        let b = Cell::new(20.0, 30.0, 0.0, 10.0, 0.0, 10.0);
+        let clipped = a.clip_against(&b);
+        assert_eq!(clipped, a);
+    }
+
+    #[test]
+    fn test_clip_against_x_overlap() {
+        let expanded = Cell::new(0.0, 24.0, -1.0, 25.0, -12.0, 12.0);
+        let keep_out = Cell::new(12.0, 24.0, -1.0, 17.4, -12.0, 12.0);
+        let clipped = expanded.clip_against(&keep_out);
+        assert!(clipped.x_max <= keep_out.x_min + 0.01 || clipped.x_min >= keep_out.x_max - 0.01
+            || clipped.y_max <= keep_out.y_min + 0.01 || clipped.y_min >= keep_out.y_max - 0.01
+            || clipped.z_max <= keep_out.z_min + 0.01 || clipped.z_min >= keep_out.z_max - 0.01);
+        assert!(clipped.volume() > 0.0);
+    }
+
+    #[test]
+    fn test_clip_against_preserves_largest_volume() {
+        let expanded = Cell::new(0.0, 20.0, 0.0, 10.0, 0.0, 10.0);
+        let keep_out = Cell::new(15.0, 25.0, 0.0, 10.0, 0.0, 10.0);
+        let clipped = expanded.clip_against(&keep_out);
+        assert!((clipped.x_max - 15.0).abs() < 1e-4);
+        assert!((clipped.x_min - 0.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_clip_against_adjacent_cells() {
+        let a = Cell::new(0.0, 12.0, -1.0, 25.0, -12.0, 12.0);
+        let b = Cell::new(0.0, 12.0, 12.0, 25.0, -12.0, 12.0);
+        let clipped = a.clip_against(&b);
+        assert!(clipped.volume() > 0.0);
     }
 
     #[test]

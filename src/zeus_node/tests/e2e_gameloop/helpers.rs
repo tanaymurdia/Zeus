@@ -124,3 +124,25 @@ pub fn total_handoff_out_count(nodes: &[GameLoop<TestWorld>]) -> usize {
         .filter(|e| e.state == AuthorityState::HandoffOut)
         .count()
 }
+
+#[allow(dead_code)]
+pub fn predict_position(pos: (f32, f32, f32), vel: (f32, f32, f32), dt: f32, ticks: u32) -> (f32, f32, f32) {
+    let t = dt * ticks as f32;
+    (pos.0 + vel.0 * t, pos.1 + vel.1 * t, pos.2 + vel.2 * t)
+}
+
+#[allow(dead_code)]
+pub fn entity_node_index(nodes: &[GameLoop<TestWorld>], entity_id: u64) -> Option<usize> {
+    use zeus_node::entity_manager::AuthorityState;
+    nodes.iter().position(|n| {
+        n.engine.node.manager.get_entity(entity_id)
+            .is_some_and(|e| e.state == AuthorityState::Local)
+    })
+}
+
+#[allow(dead_code)]
+pub fn expected_node_for_position(pos: (f32, f32, f32), nodes: &[GameLoop<TestWorld>]) -> Option<usize> {
+    nodes.iter().position(|n| {
+        n.engine.node.manager.cell().contains(pos)
+    })
+}

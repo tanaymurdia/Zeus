@@ -24,10 +24,83 @@ impl TestDroneWorld {
         self.local_ids.insert(id);
         id
     }
+
+    #[allow(dead_code)]
+    pub fn spawn_drone_at(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
+        self.drones.insert(id, (pos, vel));
+        self.local_ids.insert(id);
+        if id >= self.next_id {
+            self.next_id = id + 1;
+        }
+    }
 }
 
 impl GameWorld for TestDroneWorld {
     fn step(&mut self, _dt: f32) {}
+
+    fn on_entity_arrived(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
+        self.drones.insert(id, (pos, vel));
+        self.local_ids.insert(id);
+    }
+
+    fn on_entity_departed(&mut self, id: u64) {
+        self.drones.remove(&id);
+        self.local_ids.remove(&id);
+    }
+
+    fn on_entity_update(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
+        self.drones.insert(id, (pos, vel));
+    }
+
+    fn locally_simulated_ids(&self) -> &HashSet<u64> {
+        &self.local_ids
+    }
+
+    fn get_entity_state(&self, id: u64) -> Option<((f32, f32, f32), (f32, f32, f32))> {
+        self.drones.get(&id).copied()
+    }
+
+    fn status_payload(&self) -> (u16, u8, u8) {
+        (self.drones.len() as u16, 24, 3)
+    }
+}
+
+pub struct PhysicsTestDroneWorld {
+    pub drones: HashMap<u64, ((f32, f32, f32), (f32, f32, f32))>,
+    pub local_ids: HashSet<u64>,
+    pub next_id: u64,
+}
+
+impl PhysicsTestDroneWorld {
+    pub fn new() -> Self {
+        Self {
+            drones: HashMap::new(),
+            local_ids: HashSet::new(),
+            next_id: 1,
+        }
+    }
+
+    pub fn spawn_drone_at(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
+        self.drones.insert(id, (pos, vel));
+        self.local_ids.insert(id);
+        if id >= self.next_id {
+            self.next_id = id + 1;
+        }
+    }
+}
+
+impl GameWorld for PhysicsTestDroneWorld {
+    fn step(&mut self, dt: f32) {
+        let ids: Vec<u64> = self.local_ids.iter().copied().collect();
+        for id in ids {
+            if let Some((pos, vel)) = self.drones.get(&id).copied() {
+                self.drones.insert(id, (
+                    (pos.0 + vel.0 * dt, pos.1 + vel.1 * dt, pos.2 + vel.2 * dt),
+                    vel,
+                ));
+            }
+        }
+    }
 
     fn on_entity_arrived(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
         self.drones.insert(id, (pos, vel));

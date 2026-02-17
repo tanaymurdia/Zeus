@@ -89,6 +89,8 @@ struct DroneWorld {
     tick_counter: u64,
     world_min: (f32, f32, f32),
     world_max: (f32, f32, f32),
+    outer_min: (f32, f32, f32),
+    outer_max: (f32, f32, f32),
 }
 
 impl DroneWorld {
@@ -125,6 +127,8 @@ impl DroneWorld {
             tick_counter: 0,
             world_min: (x_min, y_min, z_min),
             world_max: (x_max, y_max, z_max),
+            outer_min: (0.0, -1.0, -WORLD_SIZE / 2.0),
+            outer_max: (WORLD_SIZE, WORLD_SIZE + 1.0, WORLD_SIZE / 2.0),
         }
     }
 
@@ -139,7 +143,7 @@ impl DroneWorld {
         let id = self.next_drone_id;
         self.next_drone_id += 1;
 
-        let hash = id.wrapping_mul(2654435761);
+        let hash = Self::drone_hash(id) as u64;
         let rx = (self.world_max.0 - self.world_min.0) * 0.8;
         let ry = (self.world_max.1 - self.world_min.1) * 0.8;
         let rz = (self.world_max.2 - self.world_min.2) * 0.8;
@@ -170,10 +174,14 @@ impl DroneWorld {
 
         self.drones.insert(id, Drone {
             rigid_body_handle: handle,
-            wander_seed: hash as u32,
+            wander_seed: Self::drone_hash(id),
         });
         self.drone_ids.insert(id);
         Some(id)
+    }
+
+    fn drone_hash(id: u64) -> u32 {
+        id.wrapping_mul(2654435761) as u32
     }
 
     fn spawn_drone_at(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
@@ -205,7 +213,7 @@ impl DroneWorld {
         self.collider_set.insert_with_parent(collider, handle, &mut self.rigid_body_set);
         self.drones.insert(id, Drone {
             rigid_body_handle: handle,
-            wander_seed: id as u32,
+            wander_seed: Self::drone_hash(id),
         });
         self.drone_ids.insert(id);
     }
@@ -226,7 +234,7 @@ impl DroneWorld {
         self.collider_set.insert_with_parent(collider, handle, &mut self.rigid_body_set);
         self.drones.insert(id, Drone {
             rigid_body_handle: handle,
-            wander_seed: id as u32,
+            wander_seed: Self::drone_hash(id),
         });
     }
 
@@ -256,21 +264,19 @@ impl DroneWorld {
 
     fn apply_wander_and_walls(&mut self) {
         self.tick_counter += 1;
-        let tick = self.tick_counter;
-        let wmin = self.world_min;
-        let wmax = self.world_max;
+        let omin = self.outer_min;
+        let omax = self.outer_max;
+        let t = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64() % 10000.0) as f32;
 
         for drone in self.drones.values() {
             if let Some(rb) = self.rigid_body_set.get_mut(drone.rigid_body_handle) {
                 if !rb.is_dynamic() { continue; }
                 let pos = *rb.translation();
-                let inside = pos.x >= wmin.0 && pos.x <= wmax.0
-                    && pos.y >= wmin.1 && pos.y <= wmax.1
-                    && pos.z >= wmin.2 && pos.z <= wmax.2;
-                if !inside { continue; }
 
                 let s = drone.wander_seed as f32;
-                let t = tick as f32 / 128.0;
                 let freq_x = 0.3 + (s % 7.0) * 0.1;
                 let freq_y = 0.2 + (s % 11.0) * 0.08;
                 let freq_z = 0.35 + (s % 13.0) * 0.09;
@@ -283,12 +289,12 @@ impl DroneWorld {
                 let mut force = vector![wx, wy, wz];
 
                 let margin = WALL_REPEL_DIST;
-                if pos.x < wmin.0 + margin { force.x += WALL_REPEL_FORCE * ((1.0 - (pos.x - wmin.0) / margin).clamp(0.0, 2.0)); }
-                if pos.x > wmax.0 - margin { force.x -= WALL_REPEL_FORCE * ((1.0 - (wmax.0 - pos.x) / margin).clamp(0.0, 2.0)); }
-                if pos.y < wmin.1 + margin { force.y += WALL_REPEL_FORCE * ((1.0 - (pos.y - wmin.1) / margin).clamp(0.0, 2.0)); }
-                if pos.y > wmax.1 - margin { force.y -= WALL_REPEL_FORCE * ((1.0 - (wmax.1 - pos.y) / margin).clamp(0.0, 2.0)); }
-                if pos.z < wmin.2 + margin { force.z += WALL_REPEL_FORCE * ((1.0 - (pos.z - wmin.2) / margin).clamp(0.0, 2.0)); }
-                if pos.z > wmax.2 - margin { force.z -= WALL_REPEL_FORCE * ((1.0 - (wmax.2 - pos.z) / margin).clamp(0.0, 2.0)); }
+                if pos.x < omin.0 + margin { force.x += WALL_REPEL_FORCE * ((1.0 - (pos.x - omin.0) / margin).clamp(0.0, 2.0)); }
+                if pos.x > omax.0 - margin { force.x -= WALL_REPEL_FORCE * ((1.0 - (omax.0 - pos.x) / margin).clamp(0.0, 2.0)); }
+                if pos.y < omin.1 + margin { force.y += WALL_REPEL_FORCE * ((1.0 - (pos.y - omin.1) / margin).clamp(0.0, 2.0)); }
+                if pos.y > omax.1 - margin { force.y -= WALL_REPEL_FORCE * ((1.0 - (omax.1 - pos.y) / margin).clamp(0.0, 2.0)); }
+                if pos.z < omin.2 + margin { force.z += WALL_REPEL_FORCE * ((1.0 - (pos.z - omin.2) / margin).clamp(0.0, 2.0)); }
+                if pos.z > omax.2 - margin { force.z -= WALL_REPEL_FORCE * ((1.0 - (omax.2 - pos.z) / margin).clamp(0.0, 2.0)); }
 
                 rb.add_force(force, true);
             }
@@ -321,8 +327,8 @@ impl DroneWorld {
     }
 
     fn cap_speeds(&mut self) {
-        let wmin = self.world_min;
-        let wmax = self.world_max;
+        let omin = self.outer_min;
+        let omax = self.outer_max;
         for drone in self.drones.values() {
             if let Some(rb) = self.rigid_body_set.get_mut(drone.rigid_body_handle) {
                 if !rb.is_dynamic() { continue; }
@@ -332,18 +338,13 @@ impl DroneWorld {
                     rb.set_linvel(vel * (MAX_DRONE_SPEED / speed), true);
                 }
                 let pos = *rb.translation();
-                let inside = pos.x >= wmin.0 && pos.x <= wmax.0
-                    && pos.y >= wmin.1 && pos.y <= wmax.1
-                    && pos.z >= wmin.2 && pos.z <= wmax.2;
-                if inside {
-                    let clamped = vector![
-                        pos.x.clamp(wmin.0 + 0.1, wmax.0 - 0.1),
-                        pos.y.clamp(wmin.1 + 0.1, wmax.1 - 0.1),
-                        pos.z.clamp(wmin.2 + 0.1, wmax.2 - 0.1)
-                    ];
-                    if clamped != pos {
-                        rb.set_translation(clamped, true);
-                    }
+                let clamped = vector![
+                    pos.x.clamp(omin.0 + 0.1, omax.0 - 0.1),
+                    pos.y.clamp(omin.1 + 0.1, omax.1 - 0.1),
+                    pos.z.clamp(omin.2 + 0.1, omax.2 - 0.1)
+                ];
+                if clamped != pos {
+                    rb.set_translation(clamped, true);
                 }
             }
         }
@@ -417,7 +418,7 @@ impl DroneWorld {
             self.collider_set.insert_with_parent(collider, handle, &mut self.rigid_body_set);
             self.drones.insert(id, Drone {
                 rigid_body_handle: handle,
-                wander_seed: (hash as u32).wrapping_add(i as u32),
+                wander_seed: Self::drone_hash(id),
             });
             self.drone_ids.insert(id);
             spawned.push(id);
@@ -444,13 +445,25 @@ impl GameWorld for DroneWorld {
 
     fn on_entity_arrived(&mut self, id: u64, pos: (f32, f32, f32), vel: (f32, f32, f32)) {
         if id < 1_000_000 {
+            let speed = (vel.0 * vel.0 + vel.1 * vel.1 + vel.2 * vel.2).sqrt();
+            eprintln!("[HANDOFF-IN] drone {} arrived pos=({:.2},{:.2},{:.2}) vel=({:.3},{:.3},{:.3}) speed={:.3}",
+                id, pos.0, pos.1, pos.2, vel.0, vel.1, vel.2, speed);
             self.spawn_drone_at(id, pos, vel);
         } else {
             self.spawn_remote_drone(id, pos, vel);
+            self.drone_ids.insert(id);
         }
     }
 
     fn on_entity_departed(&mut self, id: u64) {
+        if id < 1_000_000 {
+            if let Some(state) = self.get_drone_state(id) {
+                let (pos, vel) = state;
+                let speed = (vel.0 * vel.0 + vel.1 * vel.1 + vel.2 * vel.2).sqrt();
+                eprintln!("[HANDOFF-OUT] drone {} departed pos=({:.2},{:.2},{:.2}) vel=({:.3},{:.3},{:.3}) speed={:.3}",
+                    id, pos.0, pos.1, pos.2, vel.0, vel.1, vel.2, speed);
+            }
+        }
         self.remove_drone(id);
         self.drone_ids.remove(&id);
     }
@@ -506,11 +519,44 @@ enum OrchestratorMsg {
     Merge { node_id: u8 },
 }
 
+fn wire_node_io(
+    child: &mut tokio::process::Child,
+    nid: u8,
+    tx: tokio::sync::mpsc::Sender<OrchestratorMsg>,
+) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    if let Some(stdout) = child.stdout.take() {
+        let tx_c = tx.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("[Node {}] {}", nid, line);
+                if line.contains("REQUEST_WARMUP") {
+                    let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
+                    let _ = tx_c.send(OrchestratorMsg::Warmup { _node_id: nid, new_cell: nc }).await;
+                } else if line.contains("REQUEST_SPLIT") {
+                    let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
+                    let _ = tx_c.send(OrchestratorMsg::Split { _node_id: nid, new_cell: nc }).await;
+                } else if line.contains("REQUEST_MERGE") {
+                    let _ = tx_c.send(OrchestratorMsg::Merge { node_id: nid }).await;
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                eprintln!("[Node {} ERR] {}", nid, line);
+            }
+        });
+    }
+}
+
 async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    for port in start_port..start_port + 16 {
+    for port in start_port..start_port + 51 {
         let output = std::process::Command::new("lsof")
             .args(["-ti", &format!(":{}", port)])
             .output();
@@ -528,8 +574,11 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
     println!("[Swarm Arena Orchestrator] Starting on port {}", start_port);
 
     let mut nodes: Vec<(u8, tokio::process::Child)> = Vec::new();
-    let mut next_id = 1u8;
+    let mut free_ids: std::collections::BTreeSet<u8> = (1..16).collect();
     let mut active_ports: Vec<u16> = Vec::new();
+    let mut standby: Option<(u8, tokio::process::Child, u16)> = None;
+    let standby_port = start_port + 50;
+    let mut standby_id_counter = 200u8;
 
     let spawn_node = |id: u8, port: u16, peer_ports: &[u16], cell: Option<&str>| {
         let mut cmd = tokio::process::Command::new(std::env::current_exe().unwrap());
@@ -553,39 +602,26 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
 
     let mut cmd0 = spawn_node(0, start_port, &[], None);
     let mut child0 = cmd0.spawn()?;
-    if let Some(stdout) = child0.stdout.take() {
-        let tx_c = tx.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                println!("[Node 0] {}", line);
-                if line.contains("REQUEST_WARMUP") {
-                    let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
-                    let _ = tx_c.send(OrchestratorMsg::Warmup { _node_id: 0, new_cell: nc }).await;
-                } else if line.contains("REQUEST_SPLIT") {
-                    let new_cell = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
-                    let _ = tx_c.send(OrchestratorMsg::Split { _node_id: 0, new_cell }).await;
-                } else if line.contains("REQUEST_MERGE") {
-                    let _ = tx_c.send(OrchestratorMsg::Merge { node_id: 0 }).await;
-                }
-            }
-        });
-    }
-    if let Some(stderr) = child0.stderr.take() {
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                eprintln!("[Node 0 ERR] {}", line);
-            }
-        });
-    }
+    wire_node_io(&mut child0, 0, tx.clone());
     nodes.push((0, child0));
     active_ports.push(start_port);
+
+    {
+        let sb_cell_str = "0,0.01,-1,0.01,-12,-11.99";
+        let sb_id = standby_id_counter;
+        standby_id_counter = standby_id_counter.wrapping_add(1);
+        let mut sb_cmd = spawn_node(sb_id, standby_port, &[], Some(sb_cell_str));
+        if let Ok(mut sb_child) = sb_cmd.spawn() {
+            wire_node_io(&mut sb_child, sb_id, tx.clone());
+            println!("[Orchestrator] Spawned standby on port {}", standby_port);
+            standby = Some((sb_id, sb_child, standby_port));
+        }
+    }
 
     let orch_start = std::time::Instant::now();
     let mut last_spawn = std::time::Instant::now();
     let mut last_merge = std::time::Instant::now();
-    let split_cooldown = std::time::Duration::from_secs(3);
+    let split_cooldown = std::time::Duration::from_secs(2);
     let merge_cooldown = std::time::Duration::from_millis(100);
 
     loop {
@@ -594,84 +630,67 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
             Some(msg) = rx.recv() => {
                 match msg {
                     OrchestratorMsg::Warmup { _node_id: _, new_cell } => {
-                        if next_id < 16 && last_spawn.elapsed() >= split_cooldown {
-                            let port = start_port + next_id as u16;
+                        if let Some(&nid) = free_ids.iter().next() {
+                            free_ids.remove(&nid);
+                            if let Some((sb_id, mut sb_child, _)) = standby.take() {
+                                let _ = sb_child.kill().await;
+                                println!("[Orchestrator] Killed standby {} for warmup", sb_id);
+                            }
+                            let port = start_port + nid as u16;
                             let cell_str = new_cell.as_deref();
-                            let mut cmd = spawn_node(next_id, port, &active_ports, cell_str);
+                            let mut cmd = spawn_node(nid, port, &active_ports, cell_str);
                             if let Ok(mut child) = cmd.spawn() {
-                                let nid = next_id;
-                                if let Some(stdout) = child.stdout.take() {
-                                    let tx_c = tx.clone();
-                                    tokio::spawn(async move {
-                                        let mut reader = BufReader::new(stdout).lines();
-                                        while let Ok(Some(line)) = reader.next_line().await {
-                                            println!("[Node {}] {}", nid, line);
-                                            if line.contains("REQUEST_WARMUP") {
-                                                let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
-                                                let _ = tx_c.send(OrchestratorMsg::Warmup { _node_id: nid, new_cell: nc }).await;
-                                            } else if line.contains("REQUEST_SPLIT") {
-                                                let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
-                                                let _ = tx_c.send(OrchestratorMsg::Split { _node_id: nid, new_cell: nc }).await;
-                                            } else if line.contains("REQUEST_MERGE") {
-                                                let _ = tx_c.send(OrchestratorMsg::Merge { node_id: nid }).await;
-                                            }
-                                        }
-                                    });
-                                }
-                                if let Some(stderr) = child.stderr.take() {
-                                    tokio::spawn(async move {
-                                        let mut reader = BufReader::new(stderr).lines();
-                                        while let Ok(Some(line)) = reader.next_line().await {
-                                            eprintln!("[Node {} ERR] {}", nid, line);
-                                        }
-                                    });
-                                }
+                                wire_node_io(&mut child, nid, tx.clone());
                                 println!("[Orchestrator] Pre-warmed Node {} on port {} cell={:?}", nid, port, cell_str);
                                 nodes.push((nid, child));
                                 active_ports.push(port);
-                                next_id += 1;
                                 last_spawn = std::time::Instant::now();
+                            } else {
+                                free_ids.insert(nid);
+                            }
+                            if standby.is_none() {
+                                let sb_cell_str = "0,0.01,-1,0.01,-12,-11.99";
+                                let sb_id = standby_id_counter;
+                                standby_id_counter = standby_id_counter.wrapping_add(1);
+                                let mut sb_cmd = spawn_node(sb_id, standby_port, &[], Some(sb_cell_str));
+                                if let Ok(mut sb_child) = sb_cmd.spawn() {
+                                    wire_node_io(&mut sb_child, sb_id, tx.clone());
+                                    println!("[Orchestrator] Spawned new standby on port {}", standby_port);
+                                    standby = Some((sb_id, sb_child, standby_port));
+                                }
                             }
                         }
                     }
                     OrchestratorMsg::Split { _node_id: _, new_cell } => {
-                        if next_id < 16 && last_spawn.elapsed() >= split_cooldown {
-                            let port = start_port + next_id as u16;
+                        if !free_ids.is_empty() && last_spawn.elapsed() >= split_cooldown {
+                            let nid = *free_ids.iter().next().unwrap();
+                            free_ids.remove(&nid);
+                            if let Some((sb_id, mut sb_child, _)) = standby.take() {
+                                let _ = sb_child.kill().await;
+                                println!("[Orchestrator] Killed standby {} for split", sb_id);
+                            }
+                            let port = start_port + nid as u16;
                             let cell_str = new_cell.as_deref();
-                            let mut cmd = spawn_node(next_id, port, &active_ports, cell_str);
+                            let mut cmd = spawn_node(nid, port, &active_ports, cell_str);
                             if let Ok(mut child) = cmd.spawn() {
-                                let nid = next_id;
-                                if let Some(stdout) = child.stdout.take() {
-                                    let tx_c = tx.clone();
-                                    tokio::spawn(async move {
-                                        let mut reader = BufReader::new(stdout).lines();
-                                        while let Ok(Some(line)) = reader.next_line().await {
-                                            println!("[Node {}] {}", nid, line);
-                                            if line.contains("REQUEST_WARMUP") {
-                                                let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
-                                                let _ = tx_c.send(OrchestratorMsg::Warmup { _node_id: nid, new_cell: nc }).await;
-                                            } else if line.contains("REQUEST_SPLIT") {
-                                                let nc = line.split("new_cell=").nth(1).map(|s| s.trim().to_string());
-                                                let _ = tx_c.send(OrchestratorMsg::Split { _node_id: nid, new_cell: nc }).await;
-                                            } else if line.contains("REQUEST_MERGE") {
-                                                let _ = tx_c.send(OrchestratorMsg::Merge { node_id: nid }).await;
-                                            }
-                                        }
-                                    });
-                                }
-                                if let Some(stderr) = child.stderr.take() {
-                                    tokio::spawn(async move {
-                                        let mut reader = BufReader::new(stderr).lines();
-                                        while let Ok(Some(line)) = reader.next_line().await {
-                                            eprintln!("[Node {} ERR] {}", nid, line);
-                                        }
-                                    });
-                                }
+                                wire_node_io(&mut child, nid, tx.clone());
                                 println!("[Orchestrator] Spawned Node {} on port {} cell={:?}", nid, port, cell_str);
                                 nodes.push((nid, child));
                                 active_ports.push(port);
-                                next_id += 1;
                                 last_spawn = std::time::Instant::now();
+                            } else {
+                                free_ids.insert(nid);
+                            }
+                            if standby.is_none() {
+                                let sb_cell_str = "0,0.01,-1,0.01,-12,-11.99";
+                                let sb_id = standby_id_counter;
+                                standby_id_counter = standby_id_counter.wrapping_add(1);
+                                let mut sb_cmd = spawn_node(sb_id, standby_port, &[], Some(sb_cell_str));
+                                if let Ok(mut sb_child) = sb_cmd.spawn() {
+                                    wire_node_io(&mut sb_child, sb_id, tx.clone());
+                                    println!("[Orchestrator] Spawned new standby on port {}", standby_port);
+                                    standby = Some((sb_id, sb_child, standby_port));
+                                }
                             }
                         }
                     }
@@ -680,11 +699,24 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
                             if let Some(idx) = nodes.iter().position(|(nid, _)| *nid == node_id) {
                                 let (killed_id, mut child) = nodes.remove(idx);
                                 let _ = child.kill().await;
-                                if let Some(port_idx) = active_ports.iter().position(|p| *p == start_port + killed_id as u16) {
+                                let killed_port = start_port + killed_id as u16;
+                                if let Some(port_idx) = active_ports.iter().position(|p| *p == killed_port) {
                                     active_ports.remove(port_idx);
                                 }
-                                println!("[Orchestrator +{}ms] Killed Node {} (merge)", orch_start.elapsed().as_millis(), killed_id);
+                                free_ids.insert(killed_id);
+                                println!("[Orchestrator +{}ms] Killed Node {} (merge), recycled id={}", orch_start.elapsed().as_millis(), killed_id, killed_id);
                                 last_merge = std::time::Instant::now();
+                            }
+                            if nodes.len() <= 1 && standby.is_none() {
+                                let sb_cell_str = "0,0.01,-1,0.01,-12,-11.99";
+                                let sb_id = standby_id_counter;
+                                standby_id_counter = standby_id_counter.wrapping_add(1);
+                                let mut sb_cmd = spawn_node(sb_id, standby_port, &[], Some(sb_cell_str));
+                                if let Ok(mut sb_child) = sb_cmd.spawn() {
+                                    wire_node_io(&mut sb_child, sb_id, tx.clone());
+                                    println!("[Orchestrator] Spawned standby after merge on port {}", standby_port);
+                                    standby = Some((sb_id, sb_child, standby_port));
+                                }
                             }
                         }
                     }
@@ -693,6 +725,7 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
         }
     }
 
+    if let Some((_, mut sb, _)) = standby.take() { let _ = sb.kill().await; }
     for (_, mut node) in nodes { let _ = node.kill().await; }
     Ok(())
 }
@@ -733,11 +766,11 @@ async fn run_node(
     let mut autoscaler = AutoScaler::new(AutoScaleConfig {
         split_threshold: 40,
         merge_threshold: 5,
-        warmup_threshold: 30,
-        split_cooldown_ticks: 512,
+        warmup_threshold: 15,
+        split_cooldown_ticks: 256,
         merge_cooldown_ticks: 128,
         max_nodes: 16,
-        startup_grace_ticks: 128,
+        startup_grace_ticks: 64,
     });
 
     let tick_duration = std::time::Duration::from_micros(7812);
@@ -766,12 +799,15 @@ async fn run_node(
                 let y = f32::from_le_bytes(dg[8..12].try_into().unwrap_or([0; 4]));
                 let z = f32::from_le_bytes(dg[12..16].try_into().unwrap_or([0; 4]));
                 let spawn_pos = (x, y, z);
+                let before_local = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                let before_physics = game_loop.world.drone_ids.len();
                 if my_cell.contains(spawn_pos) {
                     let spawned = game_loop.world.spawn_drone_near(spawn_pos, count as usize);
-                    for did in spawned {
-                        if let Some((pos, vel)) = game_loop.world.get_drone_state(did) {
+                    for did in &spawned {
+                        if let Some((pos, vel)) = game_loop.world.get_drone_state(*did) {
                             game_loop.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
-                                id: did,
+                                id: *did,
                                 pos,
                                 vel,
                                 state: zeus_node::entity_manager::AuthorityState::Local,
@@ -779,18 +815,42 @@ async fn run_node(
                             });
                         }
                     }
+                    let after_local = game_loop.engine.node.manager.entities.values()
+                        .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                    let after_physics = game_loop.world.drone_ids.len();
+                    eprintln!("[Node {} +{}ms] SPAWN(N) at ({:.1},{:.1},{:.1}) count={} spawned={} local:{}->{} physics:{}->{} cell=[{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}]",
+                        id, node_start.elapsed().as_millis(), x, y, z, count, spawned.len(),
+                        before_local, after_local, before_physics, after_physics,
+                        my_cell.x_min, my_cell.x_max, my_cell.y_min, my_cell.y_max, my_cell.z_min, my_cell.z_max);
+                } else {
+                    eprintln!("[Node {} +{}ms] SPAWN(N) REJECTED pos ({:.1},{:.1},{:.1}) outside cell", id, node_start.elapsed().as_millis(), x, y, z);
                 }
             } else if dg.len() >= 3 && dg[0] == 0xDE {
                 let count = ((dg[1] as u16) << 8) | (dg[2] as u16);
-                let removed = game_loop.world.remove_n_drones(count as usize);
-                for rid in &removed {
+                let before_local = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                let before_physics = game_loop.world.drone_ids.len();
+                let handoff_out = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut).count();
+                let local_drone_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::Local && **eid < 1_000_000)
+                    .map(|(eid, _)| *eid)
+                    .take(count as usize)
+                    .collect();
+                for rid in &local_drone_ids {
+                    game_loop.world.on_entity_departed(*rid);
                     game_loop.engine.node.manager.remove_entity(*rid);
                 }
-                game_loop.broadcast_entity_removals(&removed);
+                game_loop.broadcast_entity_removals(&local_drone_ids);
                 game_loop.broadcast_status();
                 let remaining_drones = game_loop.engine.node.manager.entities.iter()
                     .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::Local && **eid < 1_000_000)
                     .count();
+                let after_physics = game_loop.world.drone_ids.len();
+                eprintln!("[Node {} +{}ms] DESPAWN(B) requested={} removed={} local:{}->{} physics:{}->{} handoff_out={} peers={}",
+                    id, node_start.elapsed().as_millis(), count, local_drone_ids.len(),
+                    before_local, remaining_drones, before_physics, after_physics, handoff_out,
+                    game_loop.engine.discovery.peer_ids().len());
                 let peer_count = game_loop.engine.discovery.peer_ids().len();
                 if remaining_drones < 5 && peer_count > 0 && !draining && !drain_merge_requested {
                     draining = true;
@@ -812,12 +872,14 @@ async fn run_node(
             } else if dg.len() >= 3 && dg[0] == 0xDD {
                 let count = ((dg[1] as u16) << 8) | (dg[2] as u16);
                 let spawn_pos = my_cell.center();
+                let before_local = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
                 if my_cell.contains(spawn_pos) {
                     let spawned = game_loop.world.spawn_drone_near(spawn_pos, count as usize);
-                    for did in spawned {
-                        if let Some((pos, vel)) = game_loop.world.get_drone_state(did) {
+                    for did in &spawned {
+                        if let Some((pos, vel)) = game_loop.world.get_drone_state(*did) {
                             game_loop.engine.node.manager.add_entity(zeus_node::entity_manager::Entity {
-                                id: did,
+                                id: *did,
                                 pos,
                                 vel,
                                 state: zeus_node::entity_manager::AuthorityState::Local,
@@ -825,6 +887,11 @@ async fn run_node(
                             });
                         }
                     }
+                    let after_local = game_loop.engine.node.manager.entities.values()
+                        .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                    eprintln!("[Node {} +{}ms] SPAWN(N-simple) center=({:.1},{:.1},{:.1}) count={} spawned={} local:{}->{} physics:{}",
+                        id, node_start.elapsed().as_millis(), spawn_pos.0, spawn_pos.1, spawn_pos.2,
+                        count, spawned.len(), before_local, after_local, game_loop.world.drone_ids.len());
                 }
             }
         }
@@ -850,7 +917,7 @@ async fn run_node(
                 ScaleEvent::WarmupRecommended { projected_cell, projected_new_cell, .. } => {
                     pending_split = Some((projected_cell.clone(), projected_new_cell.clone()));
                     println!(
-                        "REQUEST_SPLIT new_cell={},{},{},{},{},{}",
+                        "REQUEST_WARMUP new_cell={},{},{},{},{},{}",
                         projected_new_cell.x_min, projected_new_cell.x_max,
                         projected_new_cell.y_min, projected_new_cell.y_max,
                         projected_new_cell.z_min, projected_new_cell.z_max,
@@ -916,12 +983,21 @@ async fn run_node(
                             );
                             pending_split = Some((keep_cell, new_cell));
                         } else {
+                        let pre_local = game_loop.engine.node.manager.entities.values()
+                            .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                        let pre_physics = game_loop.world.drone_ids.len();
+                        let pre_outside = game_loop.engine.node.manager.entities.values()
+                            .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && !keep_cell.contains(e.pos)).count();
                         my_cell = keep_cell;
                         game_loop.set_cell(my_cell.clone());
                         game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
                         game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
                         game_loop.evict_out_of_cell_from_physics();
-                        eprintln!("[Node {} +{}ms] Cell shrunk to {:?} (peer {} ready)", id, node_start.elapsed().as_millis(), my_cell, pid);
+                        let post_local = game_loop.engine.node.manager.entities.values()
+                            .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                        eprintln!("[Node {} +{}ms] Cell shrunk to {:?} (peer {} ready) local:{}->{} physics:{} outside_new_cell={}",
+                            id, node_start.elapsed().as_millis(), my_cell, pid,
+                            pre_local, post_local, pre_physics, pre_outside);
                         split_debug_ticks = 0;
                         game_loop.broadcast_status();
                         game_loop.broadcast_cells(&[my_cell.clone()]);
@@ -934,11 +1010,47 @@ async fn run_node(
             }
         }
 
+        if let Some((ref keep_cell, ref new_cell)) = pending_split {
+            let peer_cells = game_loop.engine.discovery.peer_cells();
+            let matching_peer = peer_cells.iter().find(|(_, pc)| {
+                (pc.x_min - new_cell.x_min).abs() < 2.0
+                && (pc.x_max - new_cell.x_max).abs() < 2.0
+                && (pc.y_min - new_cell.y_min).abs() < 2.0
+                && (pc.y_max - new_cell.y_max).abs() < 2.0
+                && (pc.z_min - new_cell.z_min).abs() < 2.0
+                && (pc.z_max - new_cell.z_max).abs() < 2.0
+            });
+            if let Some((pid, _)) = matching_peer {
+                let pre_local = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000).count();
+                let pre_outside = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && !keep_cell.contains(e.pos)).count();
+                my_cell = keep_cell.clone();
+                game_loop.set_cell(my_cell.clone());
+                game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
+                game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
+                game_loop.evict_out_of_cell_from_physics();
+                eprintln!("[Node {} +{}ms] Eager split: peer {} ready local={} outside_new_cell={}",
+                    id, node_start.elapsed().as_millis(), pid, pre_local, pre_outside);
+                split_debug_ticks = 0;
+                game_loop.broadcast_status();
+                game_loop.broadcast_cells(&[my_cell.clone()]);
+                pending_split = None;
+            }
+        }
+
         if !pending_dead_cells.is_empty() {
             let alive_peer_cells = game_loop.engine.discovery.peer_cells();
             let overlap_eps = 0.2;
             let mut absorbed = Vec::new();
             for (i, dead_cell) in pending_dead_cells.iter().enumerate() {
+                let dc_center = dead_cell.center();
+                let already_covered = alive_peer_cells.iter().any(|(_, pc)| pc.contains(dc_center))
+                    || my_cell.contains(dc_center);
+                if already_covered {
+                    absorbed.push(i);
+                    continue;
+                }
                 if let Some(expanded) = my_cell.expand_toward(dead_cell) {
                     let overlaps = alive_peer_cells.iter().any(|(_, pc)| {
                         expanded.x_min + overlap_eps < pc.x_max && expanded.x_max - overlap_eps > pc.x_min
@@ -969,10 +1081,25 @@ async fn run_node(
                     .map(|(eid, _)| *eid)
                     .collect();
                 for rid in &stale_remote_ids {
+                    game_loop.world.remove_drone(*rid);
                     game_loop.engine.node.manager.remove_entity(*rid);
                 }
                 if !stale_remote_ids.is_empty() {
-                    eprintln!("[Node {}] Cleaned up {} stale remote entities", id, stale_remote_ids.len());
+                    eprintln!("[Node {}] Cleaned up {} stale remote entities (and proxies)", id, stale_remote_ids.len());
+                }
+            }
+        }
+        if diag_counter % 256 == 0 {
+            let proxy_count = game_loop.world.drones.len() - game_loop.world.drone_ids.len();
+            if proxy_count > 0 {
+                let proxy_ids: Vec<u64> = game_loop.world.drones.keys()
+                    .filter(|id| !game_loop.world.drone_ids.contains(id))
+                    .copied().collect();
+                let stale_proxies: Vec<u64> = proxy_ids.iter()
+                    .filter(|id| game_loop.engine.node.manager.get_entity(**id).is_none())
+                    .copied().collect();
+                for pid in &stale_proxies {
+                    game_loop.world.remove_drone(*pid);
                 }
             }
         }
@@ -980,17 +1107,37 @@ async fn run_node(
         if draining {
             let active_peer_count = game_loop.engine.discovery.peer_ids().len();
             if active_peer_count == 0 {
-                eprintln!("[Node {} +{}ms] Last node standing, exiting drain mode", id, node_start.elapsed().as_millis());
+                let full_world = zeus_node::cell::Cell::new(0.0, WORLD_SIZE, -1.0, WORLD_SIZE + 1.0, -WORLD_SIZE / 2.0, WORLD_SIZE / 2.0);
+                my_cell = full_world;
+                game_loop.set_cell(my_cell.clone());
+                game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
+                game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
+                eprintln!("[Node {} +{}ms] Last node standing, reset cell to full world", id, node_start.elapsed().as_millis());
                 draining = false;
                 drain_ticks = 0;
                 drain_merge_requested = false;
+                pending_split = None;
                 let stuck_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
-                    .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut)
+                    .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut
+                        || e.state == zeus_node::entity_manager::AuthorityState::HandoffIn
+                        || e.state == zeus_node::entity_manager::AuthorityState::Remote)
                     .map(|(eid, _)| *eid)
                     .collect();
-                for sid in stuck_ids {
-                    game_loop.engine.node.manager.set_state(sid, zeus_node::entity_manager::AuthorityState::Local);
+                for sid in &stuck_ids {
+                    game_loop.engine.node.manager.set_state(*sid, zeus_node::entity_manager::AuthorityState::Local);
                 }
+                let local_ids: Vec<u64> = game_loop.engine.node.manager.entities.values()
+                    .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000)
+                    .map(|e| e.id).collect();
+                for eid in &local_ids {
+                    if !game_loop.world.drone_ids.contains(eid) {
+                        if let Some(entity) = game_loop.engine.node.manager.get_entity(*eid) {
+                            game_loop.world.on_entity_arrived(*eid, entity.pos, entity.vel);
+                        }
+                    }
+                }
+                game_loop.broadcast_status();
+                game_loop.broadcast_cells(&[my_cell.clone()]);
             } else {
                 drain_ticks += 1;
                 let player_entity_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
@@ -1007,13 +1154,25 @@ async fn run_node(
                     .count();
                 if active_peer_count == 0 {
                     let stuck_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
-                        .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut)
+                        .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut
+                            || e.state == zeus_node::entity_manager::AuthorityState::HandoffIn
+                            || e.state == zeus_node::entity_manager::AuthorityState::Remote)
                         .map(|(eid, _)| *eid)
                         .collect();
-                    for sid in stuck_ids {
-                        game_loop.engine.node.manager.set_state(sid, zeus_node::entity_manager::AuthorityState::Local);
+                    for sid in &stuck_ids {
+                        game_loop.engine.node.manager.set_state(*sid, zeus_node::entity_manager::AuthorityState::Local);
                     }
-                    eprintln!("[Node {} +{}ms] No peers, requesting immediate merge", id, node_start.elapsed().as_millis());
+                    for eid in game_loop.engine.node.manager.entities.values()
+                        .filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local && e.id < 1_000_000)
+                        .map(|e| e.id).collect::<Vec<_>>()
+                    {
+                        if !game_loop.world.drone_ids.contains(&eid) {
+                            if let Some(entity) = game_loop.engine.node.manager.get_entity(eid) {
+                                game_loop.world.on_entity_arrived(eid, entity.pos, entity.vel);
+                            }
+                        }
+                    }
+                    eprintln!("[Node {} +{}ms] No peers, requesting immediate merge (recovered {} stuck)", id, node_start.elapsed().as_millis(), stuck_ids.len());
                     game_loop.close_all_connections();
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                     println!("REQUEST_MERGE");
@@ -1066,11 +1225,14 @@ async fn run_node(
         if diag_counter % 512 == 0 {
             let em = &game_loop.engine.node.manager;
             let lc = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local).count();
+            let ho = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut).count();
+            let hi = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::HandoffIn).count();
+            let rem = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Remote).count();
             let physics_drones = game_loop.world.drone_count();
             let tn = game_loop.engine.discovery.total_node_count();
             eprintln!(
-                "[Node {}] entities:{} local:{} physics:{} nodes:{} cell=[{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}]",
-                id, em.entities.len(), lc, physics_drones, tn,
+                "[Node {}] local:{} ho:{} hi:{} rem:{} physics:{} nodes:{} cell=[{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}]",
+                id, lc, ho, hi, rem, physics_drones, tn,
                 my_cell.x_min, my_cell.x_max, my_cell.y_min, my_cell.y_max, my_cell.z_min, my_cell.z_max,
             );
         }

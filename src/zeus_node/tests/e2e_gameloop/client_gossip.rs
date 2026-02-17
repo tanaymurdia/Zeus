@@ -1239,7 +1239,7 @@ async fn test_handoff_in_not_broadcast_to_clients() {
 
     assert!(seen_ids.contains(&10), "Local entity 10 should be broadcast");
     assert!(seen_ids.contains(&30), "HandoffOut entity 30 should be broadcast (parent keeps broadcasting during transit)");
-    assert!(seen_ids.contains(&20), "HandoffIn entity 20 should be broadcast (child bridges gap while awaiting Commit)");
+    assert!(!seen_ids.contains(&20), "HandoffIn entity 20 should NOT be broadcast (source handles broadcast until Commit)");
 }
 
 #[tokio::test]
