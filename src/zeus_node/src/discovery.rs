@@ -64,7 +64,7 @@ impl DiscoveryActor {
     pub fn update(&mut self, _dt: f32) {
         let now = Instant::now();
         self.peers
-            .retain(|_, p| now.duration_since(p.last_seen) < Duration::from_secs(10));
+            .retain(|_, p| now.duration_since(p.last_seen) < Duration::from_secs(2));
     }
 
     pub fn process_packet(&mut self, msg: DiscoveryMsg, src_addr: SocketAddr) {
@@ -261,7 +261,7 @@ mod tests {
                 addr,
                 pos: (0.0, 0.0, 0.0),
                 load: None,
-                last_seen: Instant::now() - Duration::from_secs(11),
+                last_seen: Instant::now() - Duration::from_secs(3),
                 ordinal: 0,
                 cell: None,
             },

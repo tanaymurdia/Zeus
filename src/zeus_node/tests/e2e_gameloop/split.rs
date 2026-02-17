@@ -607,7 +607,7 @@ async fn test_autoscaler_cell_expansion_on_peer_death() {
 
     let expanded = events.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
     assert!(expanded.is_some(), "Should expand cell when adjacent peer dies");
-    if let Some(ScaleEvent::CellExpanded { new_cell }) = expanded {
+    if let Some(ScaleEvent::CellExpanded { new_cell, .. }) = expanded {
         assert!((new_cell.x_min - 0.0).abs() < 1e-3);
         assert!((new_cell.x_max - 100.0).abs() < 1e-3);
     }

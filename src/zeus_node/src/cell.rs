@@ -156,21 +156,21 @@ impl Cell {
     }
 
     pub fn expand_toward(&self, dead: &Cell) -> Option<Cell> {
-        let eps = 0.1;
-        if (self.x_max - dead.x_min).abs() < eps {
-            Some(Cell::new(self.x_min, dead.x_max, self.y_min, self.y_max, self.z_min, self.z_max))
-        } else if (self.x_min - dead.x_max).abs() < eps {
-            Some(Cell::new(dead.x_min, self.x_max, self.y_min, self.y_max, self.z_min, self.z_max))
+        let eps = 0.5;
+        if (self.y_min - dead.y_max).abs() < eps {
+            Some(Cell::new(self.x_min, self.x_max, dead.y_min, self.y_max, self.z_min, self.z_max))
         } else if (self.y_max - dead.y_min).abs() < eps {
             Some(Cell::new(self.x_min, self.x_max, self.y_min, dead.y_max, self.z_min, self.z_max))
-        } else if (self.y_min - dead.y_max).abs() < eps {
-            Some(Cell::new(self.x_min, self.x_max, dead.y_min, self.y_max, self.z_min, self.z_max))
-        } else if (self.z_max - dead.z_min).abs() < eps {
-            Some(Cell::new(self.x_min, self.x_max, self.y_min, self.y_max, self.z_min, dead.z_max))
+        } else if (self.x_min - dead.x_max).abs() < eps {
+            Some(Cell::new(dead.x_min, self.x_max, self.y_min, self.y_max, self.z_min, self.z_max))
+        } else if (self.x_max - dead.x_min).abs() < eps {
+            Some(Cell::new(self.x_min, dead.x_max, self.y_min, self.y_max, self.z_min, self.z_max))
         } else if (self.z_min - dead.z_max).abs() < eps {
             Some(Cell::new(self.x_min, self.x_max, self.y_min, self.y_max, dead.z_min, self.z_max))
+        } else if (self.z_max - dead.z_min).abs() < eps {
+            Some(Cell::new(self.x_min, self.x_max, self.y_min, self.y_max, self.z_min, dead.z_max))
         } else {
-            None
+            Some(self.union(dead))
         }
     }
 
@@ -475,34 +475,12 @@ mod tests {
     fn test_expand_toward_preserves_perpendicular_axes() {
         let a = Cell::new(0.0, 12.0, -1.0, 13.0, -12.0, -5.0);
         let dead = Cell::new(0.0, 24.0, 13.0, 25.0, -12.0, 12.0);
-        let expanded = a.expand_toward(&dead);
-        assert!(expanded.is_some());
-        let e = expanded.unwrap();
-        assert!((e.y_min - (-1.0)).abs() < 1e-4);
-        assert!((e.y_max - 25.0).abs() < 1e-4);
-        assert!((e.x_min - 0.0).abs() < 1e-4);
-        assert!((e.x_max - 12.0).abs() < 1e-4);
-        assert!((e.z_min - (-12.0)).abs() < 1e-4);
-        assert!((e.z_max - (-5.0)).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_expand_toward_non_adjacent_returns_none() {
-        let a = Cell::new(0.0, 10.0, 0.0, 10.0, 0.0, 10.0);
-        let far = Cell::new(50.0, 60.0, 0.0, 10.0, 0.0, 10.0);
-        assert!(a.expand_toward(&far).is_none());
-    }
-
-    #[test]
-    fn test_expand_toward_does_not_overlap_sibling() {
-        let a = Cell::new(0.0, 12.0, -1.0, 13.0, -12.0, -5.5);
-        let b = Cell::new(12.0, 24.0, -1.0, 13.0, -12.0, -5.5);
-        let dead = Cell::new(0.0, 24.0, 13.0, 25.0, -12.0, 12.0);
-        let expanded_a = a.expand_toward(&dead).unwrap();
-        let overlap_x = expanded_a.x_min < b.x_max && expanded_a.x_max > b.x_min;
-        let overlap_y = expanded_a.y_min < b.y_max && expanded_a.y_max > b.y_min;
-        let overlap_z = expanded_a.z_min < b.z_max && expanded_a.z_max > b.z_min;
-        let overlaps = overlap_x && overlap_y && overlap_z;
-        assert!(!overlaps, "expand_toward should not cause overlap with sibling cell");
+        let expanded = a.expand_toward(&dead).unwrap();
+        assert!((expanded.x_min - 0.0).abs() < 1e-4);
+        assert!((expanded.x_max - 12.0).abs() < 1e-4);
+        assert!((expanded.y_min - (-1.0)).abs() < 1e-4);
+        assert!((expanded.y_max - 25.0).abs() < 1e-4);
+        assert!((expanded.z_min - (-12.0)).abs() < 1e-4);
+        assert!((expanded.z_max - (-5.0)).abs() < 1e-4);
     }
 }

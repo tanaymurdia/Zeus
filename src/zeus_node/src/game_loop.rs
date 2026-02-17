@@ -47,11 +47,9 @@ impl<W: GameWorld> GameLoop<W> {
         }
 
         let local_ids = self.world.locally_simulated_ids().clone();
-        let my_cell = self.engine.node.manager.cell().clone();
         for (id, entity) in &self.engine.node.manager.entities {
             if !local_ids.contains(id)
                 && entity.state == AuthorityState::Local
-                && my_cell.contains(entity.pos)
             {
                 self.world.on_entity_arrived(*id, entity.pos, entity.vel);
             }
@@ -139,7 +137,7 @@ impl<W: GameWorld> GameLoop<W> {
         let entity_count = self.engine.node.manager.entities.values()
             .filter(|e| e.state == AuthorityState::Local)
             .count() as u16;
-        let active_nodes = self.engine.discovery.total_node_count().max(1) as u8;
+        let active_nodes = (self.engine.discovery.peer_ids().len() + 1).max(1) as u8;
         let (custom_entity_count, map_width, ball_radius) = self.world.status_payload();
         let ec = if custom_entity_count > 0 { custom_entity_count } else { entity_count };
         let status_bytes: [u8; 6] = [
@@ -164,6 +162,42 @@ impl<W: GameWorld> GameLoop<W> {
         for conn in &self.engine.client_connections {
             let _ = conn.send_datagram(status_bytes.to_vec().into());
             let _ = conn.send_datagram(bb_buf.clone().into());
+        }
+    }
+
+    pub fn broadcast_entity_removals(&self, ids: &[u64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut buf = Vec::with_capacity(3 + ids.len() * 8);
+        buf.push(0xDF);
+        let count = ids.len().min(u16::MAX as usize) as u16;
+        buf.push((count >> 8) as u8);
+        buf.push((count & 0xFF) as u8);
+        for id in ids.iter().take(count as usize) {
+            buf.extend_from_slice(&id.to_le_bytes());
+        }
+        let payload: bytes::Bytes = buf.into();
+        for conn in &self.engine.client_connections {
+            let _ = conn.send_datagram(payload.clone());
+        }
+    }
+
+    pub fn close_client_connections(&self) {
+        for conn in &self.engine.client_connections {
+            conn.close(0u32.into(), b"node_shutdown");
+        }
+    }
+
+    pub fn close_all_connections(&self) {
+        for conn in &self.engine.client_connections {
+            conn.close(0u32.into(), b"node_shutdown");
+        }
+        for conn in &self.engine.peer_connections {
+            conn.close(0u32.into(), b"node_shutdown");
+        }
+        for conn in &self.engine.connections {
+            conn.close(0u32.into(), b"node_shutdown");
         }
     }
 

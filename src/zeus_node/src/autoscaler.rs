@@ -43,7 +43,7 @@ pub enum ScaleEvent {
     MergeRecommended,
     PeerJoined { id: u64 },
     PeerLeft { id: u64, cell: Option<Cell> },
-    CellExpanded { new_cell: Cell },
+    CellExpanded { new_cell: Cell, dead_peer_id: u64 },
 }
 
 pub struct AutoScaler {
@@ -96,6 +96,7 @@ impl AutoScaler {
                     if let Some(expanded) = my_cell.expand_toward(dc) {
                         events.push(ScaleEvent::CellExpanded {
                             new_cell: expanded,
+                            dead_peer_id: *id,
                         });
                     }
                 }
@@ -347,7 +348,7 @@ mod tests {
         let events = scaler.evaluate(&my_cell, 10, &empty_peers, &empty_cells, 1, &[]);
         let expanded = events.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
         assert!(expanded.is_some());
-        if let Some(ScaleEvent::CellExpanded { new_cell }) = expanded {
+        if let Some(ScaleEvent::CellExpanded { new_cell, .. }) = expanded {
             assert!((new_cell.x_min - 0.0).abs() < 1e-4);
             assert!((new_cell.x_max - 100.0).abs() < 1e-4);
         }

@@ -47,7 +47,7 @@ fn generate_snapshots(
     }
 
     let now = std::time::Instant::now();
-    let stale_threshold = std::time::Duration::from_secs(5);
+    let stale_threshold = std::time::Duration::from_millis(1500);
     map_lock.retain(|_, (_, _, last_seen)| now.duration_since(*last_seen) < stale_threshold);
 
     let new_positions: std::collections::HashMap<u64, ((f32, f32, f32), (f32, f32, f32))> = map_lock
@@ -413,11 +413,46 @@ fn setup_network(
                                                             *c = merged;
                                                         }
                                                     }
+                                                } else if data.len() >= 3 && data[0] == 0xDF {
+                                                    let count = ((data[1] as u16) << 8) | (data[2] as u16);
+                                                    let mut offset = 3usize;
+                                                    if let Ok(mut map) = accumulated_positions.lock() {
+                                                        for _ in 0..count {
+                                                            if offset + 8 > data.len() { break; }
+                                                            let id = u64::from_le_bytes(
+                                                                data[offset..offset+8].try_into().unwrap_or([0u8; 8]),
+                                                            );
+                                                            offset += 8;
+                                                            map.remove(&id);
+                                                        }
+                                                    }
                                                 }
                                             }
                                             Err(_) => break,
                                         }
                                     }
+
+                                    if let Ok(mut pp) = octree_per_port.lock() {
+                                        pp.remove(&port);
+                                        let merged: Vec<CellBounds> = pp.values().flatten().cloned().collect();
+                                        if let Ok(mut c) = octree_cells_shared.lock() {
+                                            *c = merged;
+                                        }
+                                    }
+                                    if let Ok(mut counts) = per_node_counts.lock() {
+                                        counts.remove(&port);
+                                        let total: u16 = counts.values().sum();
+                                        entity_count.store(total, Ordering::Relaxed);
+                                    }
+                                    if let Ok(mut ports) = connected_ports.lock() {
+                                        ports.remove(&port);
+                                    }
+                                    if let Ok(mut conns) = all_connections.lock() {
+                                        conns.retain(|c| c.stable_id() != conn.stable_id());
+                                    }
+                                    let remaining = connected_ports.lock().map(|s| s.len()).unwrap_or(0);
+                                    node_count.store(remaining.max(1) as u8, Ordering::Relaxed);
+
                                     return;
                                 }
                                 Err(_) => {}

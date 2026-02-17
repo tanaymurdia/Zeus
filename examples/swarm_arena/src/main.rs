@@ -287,7 +287,7 @@ fn render_server_drones(
 ) {
     frame_counter.0 = frame_counter.0.wrapping_add(1);
     let current_frame = frame_counter.0;
-    let despawn_grace_frames: u32 = 300;
+    let despawn_grace_frames: u32 = 15;
     let now_instant = std::time::Instant::now();
     let acc_map = net
         .accumulated

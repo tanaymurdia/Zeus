@@ -322,6 +322,22 @@ impl ZeusEngine {
         }
         self.discovery.update(dt);
 
+        let dead_peer_addrs: Vec<SocketAddr> = self.peer_connections.iter()
+            .filter(|c| c.close_reason().is_some())
+            .map(|c| c.remote_address())
+            .collect();
+        if !dead_peer_addrs.is_empty() {
+            self.peer_connections.retain(|c| c.close_reason().is_none());
+            self.connections.retain(|c| c.close_reason().is_none());
+            let dead_peer_ids: Vec<u64> = self.discovery.peers.iter()
+                .filter(|(_, p)| dead_peer_addrs.contains(&p.addr))
+                .map(|(id, _)| *id)
+                .collect();
+            for pid in dead_peer_ids {
+                self.discovery.prune_node(pid);
+            }
+        }
+
         let total_entities = self.node.manager.entity_count() as u16;
         self.discovery.set_load(total_entities, 0);
 

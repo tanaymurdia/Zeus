@@ -256,13 +256,12 @@ async fn test_drain_3node_entities_distributed_correctly() {
 }
 
 #[tokio::test]
-async fn test_autoscaler_expand_toward_does_not_overlap_peers() {
+async fn test_autoscaler_expand_toward_proposes_union() {
     use zeus_node::autoscaler::{AutoScaleConfig, AutoScaler, ScaleEvent};
     use zeus_node::cell::Cell;
 
-    let cell_a = Cell::new(0.0, 12.0, -1.0, 13.0, -12.0, -5.5);
-    let cell_b = Cell::new(12.0, 24.0, -1.0, 13.0, -12.0, -5.5);
-    let dead_cell = Cell::new(0.0, 24.0, 13.0, 25.0, -12.0, 12.0);
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 100.0, 0.0, 100.0);
+    let dead_cell = Cell::new(50.0, 100.0, 0.0, 100.0, 0.0, 100.0);
 
     let mut scaler = AutoScaler::new(AutoScaleConfig {
         split_threshold: 40,
@@ -276,32 +275,21 @@ async fn test_autoscaler_expand_toward_does_not_overlap_peers() {
 
     let mut peer_ids = HashSet::new();
     peer_ids.insert(42);
-    peer_ids.insert(43);
     let mut peer_cells = HashMap::new();
     peer_cells.insert(42, dead_cell.clone());
-    peer_cells.insert(43, cell_b.clone());
-    scaler.evaluate(&cell_a, 10, &peer_ids, &peer_cells, 3, &[]);
+    scaler.evaluate(&cell_a, 10, &peer_ids, &peer_cells, 2, &[]);
 
-    let mut alive_peers = HashSet::new();
-    alive_peers.insert(43);
-    let mut alive_cells = HashMap::new();
-    alive_cells.insert(43, cell_b.clone());
-    let events = scaler.evaluate(&cell_a, 10, &alive_peers, &alive_cells, 2, &[]);
+    let events = scaler.evaluate(&cell_a, 10, &HashSet::new(), &HashMap::new(), 1, &[]);
 
     let expanded = events.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
-    assert!(expanded.is_some(), "Should produce CellExpanded");
+    assert!(expanded.is_some(), "Should produce CellExpanded for adjacent sibling");
 
-    if let Some(ScaleEvent::CellExpanded { new_cell }) = expanded {
-        let overlap_x = new_cell.x_min < cell_b.x_max && new_cell.x_max > cell_b.x_min;
-        let overlap_y = new_cell.y_min < cell_b.y_max && new_cell.y_max > cell_b.y_min;
-        let overlap_z = new_cell.z_min < cell_b.z_max && new_cell.z_max > cell_b.z_min;
-        assert!(
-            !(overlap_x && overlap_y && overlap_z),
-            "Expanded cell {:?} should NOT overlap with alive peer {:?}",
-            new_cell, cell_b
-        );
-        assert!((new_cell.x_min - cell_a.x_min).abs() < 1e-3);
-        assert!((new_cell.x_max - cell_a.x_max).abs() < 1e-3);
+    if let Some(ScaleEvent::CellExpanded { new_cell, dead_peer_id, .. }) = expanded {
+        assert_eq!(*dead_peer_id, 42);
+        assert!((new_cell.x_min - 0.0).abs() < 1e-3);
+        assert!((new_cell.x_max - 100.0).abs() < 1e-3);
+        assert!((new_cell.y_min - 0.0).abs() < 1e-3);
+        assert!((new_cell.y_max - 100.0).abs() < 1e-3);
     }
 }
 
@@ -512,7 +500,7 @@ async fn test_cell_expand_toward_covers_dead_space() {
     let expanded = events.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
     assert!(expanded.is_some());
 
-    if let Some(ScaleEvent::CellExpanded { new_cell }) = expanded {
+    if let Some(ScaleEvent::CellExpanded { new_cell, .. }) = expanded {
         assert!((new_cell.x_max - 100.0).abs() < 1e-3, "Should expand to cover dead space");
         assert!((new_cell.y_min - 0.0).abs() < 1e-3, "Y should be preserved");
         assert!((new_cell.y_max - 100.0).abs() < 1e-3, "Y should be preserved");

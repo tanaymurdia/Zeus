@@ -106,7 +106,7 @@ async fn test_full_split_merge_cycle() {
         let events3 = scaler.evaluate(keep_cell, 2, &HashSet::new(), &HashMap::new(), 1, &[]);
         let expanded = events3.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
         assert!(expanded.is_some(), "Phase 3: peer death should expand cell");
-        if let Some(ScaleEvent::CellExpanded { new_cell: expanded_cell }) = expanded {
+        if let Some(ScaleEvent::CellExpanded { new_cell: expanded_cell, .. }) = expanded {
             assert!((expanded_cell.volume() - full_cell.volume()).abs() / full_cell.volume() < 0.01,
                 "Expanded cell should approximate original full cell");
         }

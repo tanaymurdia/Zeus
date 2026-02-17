@@ -33,7 +33,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
 
     let mut transport_config = TransportConfig::default();
-    transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(10).try_into().unwrap()));
+    transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(2).try_into().unwrap()));
     transport_config.keep_alive_interval(Some(std::time::Duration::from_millis(500)));
     transport_config.datagram_receive_buffer_size(Some(10 * 1024 * 1024));
     transport_config.datagram_send_buffer_size(10 * 1024 * 1024);
@@ -50,7 +50,7 @@ fn configure_client(server_cert_der: &[u8]) -> Result<ClientConfig, Box<dyn Erro
     let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots))?;
 
     let mut transport_config = TransportConfig::default();
-    transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(10).try_into().unwrap()));
+    transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(2).try_into().unwrap()));
     transport_config.keep_alive_interval(Some(std::time::Duration::from_millis(500)));
     transport_config.datagram_receive_buffer_size(Some(10 * 1024 * 1024));
 
@@ -129,7 +129,7 @@ pub fn make_promiscuous_endpoint(
     let mut client_config = ClientConfig::new(Arc::new(crypto));
 
     let mut transport_config = TransportConfig::default();
-    transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(10).try_into().unwrap()));
+    transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(2).try_into().unwrap()));
     transport_config.keep_alive_interval(Some(std::time::Duration::from_millis(500)));
     transport_config.datagram_receive_buffer_size(Some(10 * 1024 * 1024));
     transport_config.datagram_send_buffer_size(10 * 1024 * 1024);

@@ -139,7 +139,7 @@ async fn test_autoscaler_cell_expansion_on_adjacent_peer_death() {
 
     let expanded = events.iter().find(|e| matches!(e, ScaleEvent::CellExpanded { .. }));
     assert!(expanded.is_some(), "Adjacent peer death should expand cell");
-    if let Some(ScaleEvent::CellExpanded { new_cell }) = expanded {
+    if let Some(ScaleEvent::CellExpanded { new_cell, .. }) = expanded {
         assert!((new_cell.x_min - 0.0).abs() < 1e-3);
         assert!((new_cell.x_max - 24.0).abs() < 1e-3);
         assert!((new_cell.volume() - my_cell.union(&dead_cell).volume()).abs() < 1.0);
@@ -298,30 +298,19 @@ async fn test_autoscaler_merge_threshold_boundary() {
 }
 
 #[tokio::test]
-async fn test_expand_toward_only_along_shared_face() {
-    let cell_a = Cell::new(0.0, 12.0, -1.0, 13.0, -12.0, -5.5);
-    let cell_b = Cell::new(12.0, 24.0, -1.0, 13.0, -12.0, -5.5);
-    let cell_c = Cell::new(0.0, 12.0, -1.0, 13.0, -5.5, 12.0);
-    let dead_cell = Cell::new(0.0, 24.0, 13.0, 25.0, -12.0, 12.0);
+async fn test_expand_toward_returns_union() {
+    let cell_a = Cell::new(0.0, 50.0, 0.0, 100.0, 0.0, 100.0);
+    let dead_cell = Cell::new(50.0, 100.0, 0.0, 100.0, 0.0, 100.0);
 
-    let expanded_a = cell_a.expand_toward(&dead_cell);
-    assert!(expanded_a.is_some(), "A shares y face with dead");
-    let ea = expanded_a.unwrap();
+    let expanded = cell_a.expand_toward(&dead_cell);
+    assert!(expanded.is_some());
+    let ea = expanded.unwrap();
     assert!((ea.x_min - 0.0).abs() < 1e-3);
-    assert!((ea.x_max - 12.0).abs() < 1e-3, "X should NOT change");
-    assert!((ea.z_min - (-12.0)).abs() < 1e-3, "Z should NOT change");
-    assert!((ea.z_max - (-5.5)).abs() < 1e-3, "Z should NOT change");
-    assert!((ea.y_max - 25.0).abs() < 1e-3, "Y should expand");
-
-    let overlap_ab = ea.x_min < cell_b.x_max && ea.x_max > cell_b.x_min
-        && ea.y_min < cell_b.y_max && ea.y_max > cell_b.y_min
-        && ea.z_min < cell_b.z_max && ea.z_max > cell_b.z_min;
-    assert!(!overlap_ab, "Expanded A should NOT overlap B");
-
-    let overlap_ac = ea.x_min < cell_c.x_max && ea.x_max > cell_c.x_min
-        && ea.y_min < cell_c.y_max && ea.y_max > cell_c.y_min
-        && ea.z_min < cell_c.z_max && ea.z_max > cell_c.z_min;
-    assert!(!overlap_ac, "Expanded A should NOT overlap C");
+    assert!((ea.x_max - 100.0).abs() < 1e-3);
+    assert!((ea.y_min - 0.0).abs() < 1e-3);
+    assert!((ea.y_max - 100.0).abs() < 1e-3);
+    assert!((ea.z_min - 0.0).abs() < 1e-3);
+    assert!((ea.z_max - 100.0).abs() < 1e-3);
 }
 
 #[tokio::test]

@@ -582,10 +582,11 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
     nodes.push((0, child0));
     active_ports.push(start_port);
 
+    let orch_start = std::time::Instant::now();
     let mut last_spawn = std::time::Instant::now();
     let mut last_merge = std::time::Instant::now();
     let split_cooldown = std::time::Duration::from_secs(3);
-    let merge_cooldown = std::time::Duration::from_secs(5);
+    let merge_cooldown = std::time::Duration::from_millis(100);
 
     loop {
         tokio::select! {
@@ -678,12 +679,11 @@ async fn run_orchestrator(start_port: u16) -> Result<(), Box<dyn std::error::Err
                         if nodes.len() > 1 && last_merge.elapsed() >= merge_cooldown {
                             if let Some(idx) = nodes.iter().position(|(nid, _)| *nid == node_id) {
                                 let (killed_id, mut child) = nodes.remove(idx);
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 let _ = child.kill().await;
                                 if let Some(port_idx) = active_ports.iter().position(|p| *p == start_port + killed_id as u16) {
                                     active_ports.remove(port_idx);
                                 }
-                                println!("[Orchestrator] Killed Node {} (merge)", killed_id);
+                                println!("[Orchestrator +{}ms] Killed Node {} (merge)", orch_start.elapsed().as_millis(), killed_id);
                                 last_merge = std::time::Instant::now();
                             }
                         }
@@ -705,6 +705,7 @@ async fn run_node(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use zeus_node::autoscaler::{AutoScaleConfig, AutoScaler, ScaleEvent};
 
+    let node_start = std::time::Instant::now();
     eprintln!("[Node {}] bind={} peers={:?} cell={:?}", id, bind, seed_addrs, cell_override);
 
     let initial_cell = cell_override.clone().unwrap_or_else(|| {
@@ -734,9 +735,9 @@ async fn run_node(
         merge_threshold: 5,
         warmup_threshold: 30,
         split_cooldown_ticks: 512,
-        merge_cooldown_ticks: 1024,
+        merge_cooldown_ticks: 128,
         max_nodes: 16,
-        startup_grace_ticks: 2048,
+        startup_grace_ticks: 128,
     });
 
     let tick_duration = std::time::Duration::from_micros(7812);
@@ -747,10 +748,11 @@ async fn run_node(
     let mut my_cell = initial_cell;
     let mut pending_split: Option<(Cell, Cell)> = None;
     let mut split_debug_ticks: i32 = -1;
-    let mut tracked_ids: Vec<u64> = Vec::new();
+    let _tracked_ids: Vec<u64> = Vec::new();
     let mut draining = false;
     let mut drain_ticks: u32 = 0;
     let mut drain_merge_requested = false;
+    let mut pending_dead_cells: Vec<Cell> = Vec::new();
 
     loop {
         let loop_start = std::time::Instant::now();
@@ -781,8 +783,19 @@ async fn run_node(
             } else if dg.len() >= 3 && dg[0] == 0xDE {
                 let count = ((dg[1] as u16) << 8) | (dg[2] as u16);
                 let removed = game_loop.world.remove_n_drones(count as usize);
-                for rid in removed {
-                    game_loop.engine.node.manager.remove_entity(rid);
+                for rid in &removed {
+                    game_loop.engine.node.manager.remove_entity(*rid);
+                }
+                game_loop.broadcast_entity_removals(&removed);
+                game_loop.broadcast_status();
+                let remaining_drones = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::Local && **eid < 1_000_000)
+                    .count();
+                let peer_count = game_loop.engine.discovery.peer_ids().len();
+                if remaining_drones < 5 && peer_count > 0 && !draining && !drain_merge_requested {
+                    draining = true;
+                    drain_ticks = 0;
+                    eprintln!("[Node {} +{}ms] Immediate drain after despawn (remaining={})", id, node_start.elapsed().as_millis(), remaining_drones);
                 }
             } else if dg.len() >= 4 && dg[0] == 0xDD {
                 let mode = dg[1];
@@ -821,7 +834,7 @@ async fn run_node(
         let local_count = local_positions.len();
         let peer_ids = game_loop.engine.discovery.peer_ids();
         let peer_cells = game_loop.engine.discovery.peer_cells();
-        let total_nodes = game_loop.engine.discovery.total_node_count().max(1);
+        let total_nodes = peer_ids.len() + 1;
 
         let scale_events = autoscaler.evaluate(
             &my_cell,
@@ -856,27 +869,31 @@ async fn run_node(
                     if !draining && !drain_merge_requested {
                         draining = true;
                         drain_ticks = 0;
-                        eprintln!("[Node {}] Entering drain mode for merge", id);
+                        eprintln!("[Node {} +{}ms] Entering drain mode for merge", id, node_start.elapsed().as_millis());
                     }
                 }
-                ScaleEvent::CellExpanded { new_cell } => {
+                ScaleEvent::CellExpanded { new_cell, dead_peer_id } => {
                     let alive_peer_cells = game_loop.engine.discovery.peer_cells();
-                    let overlaps = alive_peer_cells.values().any(|pc| {
-                        new_cell.x_min < pc.x_max && new_cell.x_max > pc.x_min
-                            && new_cell.y_min < pc.y_max && new_cell.y_max > pc.y_min
-                            && new_cell.z_min < pc.z_max && new_cell.z_max > pc.z_min
+                    let overlap_eps = 0.2;
+                    let overlaps = alive_peer_cells.iter().any(|(pid, pc)| {
+                        *pid != *dead_peer_id
+                            && new_cell.x_min + overlap_eps < pc.x_max && new_cell.x_max - overlap_eps > pc.x_min
+                            && new_cell.y_min + overlap_eps < pc.y_max && new_cell.y_max - overlap_eps > pc.y_min
+                            && new_cell.z_min + overlap_eps < pc.z_max && new_cell.z_max - overlap_eps > pc.z_min
                     });
                     if overlaps {
                         eprintln!(
-                            "[Node {}] CellExpanded REJECTED (would overlap with alive peers): {:?}",
-                            id, new_cell
+                            "[Node {} +{}ms] CellExpanded REJECTED (overlap): {:?}",
+                            id, node_start.elapsed().as_millis(), new_cell
                         );
+                        pending_dead_cells.push(new_cell.clone());
                     } else {
                         my_cell = new_cell.clone();
                         game_loop.set_cell(my_cell.clone());
-                    game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
-                    game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
-                    eprintln!("[Node {}] Cell expanded to {:?}", id, my_cell);
+                        game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
+                        game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
+                        eprintln!("[Node {} +{}ms] Cell expanded to {:?}", id, node_start.elapsed().as_millis(), my_cell);
+                        game_loop.broadcast_cells(&[my_cell.clone()]);
                     }
                 }
                 ScaleEvent::PeerJoined { id: pid } => {
@@ -899,121 +916,141 @@ async fn run_node(
                             );
                             pending_split = Some((keep_cell, new_cell));
                         } else {
-                        let pre_local: Vec<_> = game_loop.engine.node.manager.entities.iter()
-                            .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::Local)
-                            .map(|(eid, e)| (*eid, e.pos, e.vel))
-                            .collect();
-                        eprintln!("[Node {}] PRE-EVICT local={} sample:", id, pre_local.len());
-                        for (eid, p, v) in pre_local.iter().take(5) {
-                            eprintln!("  id={} pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})", eid, p.0, p.1, p.2, v.0, v.1, v.2);
-                        }
                         my_cell = keep_cell;
                         game_loop.set_cell(my_cell.clone());
                         game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
                         game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
                         game_loop.evict_out_of_cell_from_physics();
-                        let post_states: Vec<_> = game_loop.engine.node.manager.entities.iter()
-                            .map(|(eid, e)| (*eid, e.state.clone(), e.pos, e.vel))
-                            .collect();
-                        let ho_count = post_states.iter().filter(|(_, s, _, _)| *s == zeus_node::entity_manager::AuthorityState::HandoffOut).count();
-                        let lo_count = post_states.iter().filter(|(_, s, _, _)| *s == zeus_node::entity_manager::AuthorityState::Local).count();
-                        eprintln!("[Node {}] POST-EVICT local={} handoffout={} total={}", id, lo_count, ho_count, post_states.len());
-                        tracked_ids = post_states.iter()
-                            .filter(|(_, s, _, _)| *s == zeus_node::entity_manager::AuthorityState::HandoffOut)
-                            .take(3)
-                            .map(|(eid, _, _, _)| *eid)
-                            .collect();
-                        eprintln!("[Node {}] TRACKING IDs: {:?}", id, tracked_ids);
-                        for (eid, st, p, v) in post_states.iter().filter(|(eid, _, _, _)| tracked_ids.contains(eid)) {
-                            eprintln!("  id={} state={:?} pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})", eid, st, p.0, p.1, p.2, v.0, v.1, v.2);
-                        }
-                        eprintln!("[Node {}] Cell shrunk to {:?} (peer {} ready)", id, my_cell, pid);
+                        eprintln!("[Node {} +{}ms] Cell shrunk to {:?} (peer {} ready)", id, node_start.elapsed().as_millis(), my_cell, pid);
                         split_debug_ticks = 0;
                         game_loop.broadcast_status();
                         game_loop.broadcast_cells(&[my_cell.clone()]);
                     }}
                 }
                 ScaleEvent::PeerLeft { id: pid, .. } => {
-                    eprintln!("[Node {}] Peer {} left", id, pid);
+                    eprintln!("[Node {} +{}ms] Peer {} left", id, node_start.elapsed().as_millis(), pid);
+                    game_loop.engine.discovery.prune_node(*pid);
                 }
             }
         }
 
-        if draining && !drain_merge_requested {
-            drain_ticks += 1;
-            let player_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
-                .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::Local)
-                .filter(|(eid, _)| !game_loop.world.drone_ids.contains(eid))
-                .map(|(eid, _)| *eid)
-                .collect();
-            let local_drone_count = game_loop.engine.node.manager.entities.iter()
-                .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::Local && game_loop.world.drone_ids.contains(eid))
-                .count();
-            let ho_drone_count = game_loop.engine.node.manager.entities.iter()
-                .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut && game_loop.world.drone_ids.contains(eid))
-                .count();
-            if local_drone_count == 0 && ho_drone_count == 0 {
-                eprintln!("[Node {}] Drain complete after {} ticks, requesting merge", id, drain_ticks);
-                println!("REQUEST_MERGE");
-                drain_merge_requested = true;
-            } else {
-                let _ = game_loop.engine.drain_local_entities(&player_ids).await;
-                if drain_ticks % 64 == 0 {
-                    eprintln!("[Node {}] Draining: local_drones={} ho_drones={} ticks={}", id, local_drone_count, ho_drone_count, drain_ticks);
+        if !pending_dead_cells.is_empty() {
+            let alive_peer_cells = game_loop.engine.discovery.peer_cells();
+            let overlap_eps = 0.2;
+            let mut absorbed = Vec::new();
+            for (i, dead_cell) in pending_dead_cells.iter().enumerate() {
+                if let Some(expanded) = my_cell.expand_toward(dead_cell) {
+                    let overlaps = alive_peer_cells.iter().any(|(_, pc)| {
+                        expanded.x_min + overlap_eps < pc.x_max && expanded.x_max - overlap_eps > pc.x_min
+                            && expanded.y_min + overlap_eps < pc.y_max && expanded.y_max - overlap_eps > pc.y_min
+                            && expanded.z_min + overlap_eps < pc.z_max && expanded.z_max - overlap_eps > pc.z_min
+                    });
+                    if !overlaps {
+                        my_cell = expanded;
+                        game_loop.set_cell(my_cell.clone());
+                        game_loop.world.world_min = (my_cell.x_min, my_cell.y_min, my_cell.z_min);
+                        game_loop.world.world_max = (my_cell.x_max, my_cell.y_max, my_cell.z_max);
+                        eprintln!("[Node {} +{}ms] Absorbed pending dead cell, expanded to {:?}", id, node_start.elapsed().as_millis(), my_cell);
+                        game_loop.broadcast_cells(&[my_cell.clone()]);
+                        absorbed.push(i);
+                    }
                 }
-                if drain_ticks > 512 {
-                    eprintln!("[Node {}] Drain timeout, forcing merge with {} remaining", id, local_drone_count + ho_drone_count);
+            }
+            for i in absorbed.into_iter().rev() {
+                pending_dead_cells.swap_remove(i);
+            }
+        }
+
+        {
+            let active_peers = game_loop.engine.discovery.peer_ids();
+            if active_peers.is_empty() {
+                let stale_remote_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::Remote)
+                    .map(|(eid, _)| *eid)
+                    .collect();
+                for rid in &stale_remote_ids {
+                    game_loop.engine.node.manager.remove_entity(*rid);
+                }
+                if !stale_remote_ids.is_empty() {
+                    eprintln!("[Node {}] Cleaned up {} stale remote entities", id, stale_remote_ids.len());
+                }
+            }
+        }
+
+        if draining {
+            let active_peer_count = game_loop.engine.discovery.peer_ids().len();
+            if active_peer_count == 0 {
+                eprintln!("[Node {} +{}ms] Last node standing, exiting drain mode", id, node_start.elapsed().as_millis());
+                draining = false;
+                drain_ticks = 0;
+                drain_merge_requested = false;
+                let stuck_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut)
+                    .map(|(eid, _)| *eid)
+                    .collect();
+                for sid in stuck_ids {
+                    game_loop.engine.node.manager.set_state(sid, zeus_node::entity_manager::AuthorityState::Local);
+                }
+            } else {
+                drain_ticks += 1;
+                let player_entity_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::Local)
+                    .filter(|(eid, _)| **eid >= 1_000_000)
+                    .map(|(eid, _)| *eid)
+                    .collect();
+                let active_peer_count = game_loop.engine.discovery.peer_ids().len();
+                let local_count = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::Local && **eid < 1_000_000)
+                    .count();
+                let ho_count = game_loop.engine.node.manager.entities.iter()
+                    .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut && **eid < 1_000_000)
+                    .count();
+                if active_peer_count == 0 {
+                    let stuck_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                        .filter(|(_, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut)
+                        .map(|(eid, _)| *eid)
+                        .collect();
+                    for sid in stuck_ids {
+                        game_loop.engine.node.manager.set_state(sid, zeus_node::entity_manager::AuthorityState::Local);
+                    }
+                    eprintln!("[Node {} +{}ms] No peers, requesting immediate merge", id, node_start.elapsed().as_millis());
+                    game_loop.close_all_connections();
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                     println!("REQUEST_MERGE");
                     drain_merge_requested = true;
+                } else if !drain_merge_requested {
+                    if drain_ticks % 64 == 0 && ho_count > 0 {
+                        let stuck_ids: Vec<u64> = game_loop.engine.node.manager.entities.iter()
+                            .filter(|(eid, e)| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut && **eid < 1_000_000)
+                            .map(|(eid, _)| *eid)
+                            .collect();
+                        for sid in stuck_ids {
+                            game_loop.engine.node.manager.set_state(sid, zeus_node::entity_manager::AuthorityState::Local);
+                        }
+                    }
+                    if local_count == 0 && ho_count == 0 {
+                        eprintln!("[Node {} +{}ms] Drain complete after {} ticks", id, node_start.elapsed().as_millis(), drain_ticks);
+                        game_loop.close_all_connections();
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        println!("REQUEST_MERGE");
+                        drain_merge_requested = true;
+                    } else {
+                        let _ = game_loop.engine.drain_local_entities(&player_entity_ids).await;
+                        if drain_ticks > 256 {
+                            eprintln!("[Node {} +{}ms] Drain timeout, forcing merge", id, node_start.elapsed().as_millis());
+                            game_loop.close_all_connections();
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                            println!("REQUEST_MERGE");
+                            drain_merge_requested = true;
+                        }
+                    }
+                } else if drain_ticks % 64 == 0 {
+                    println!("REQUEST_MERGE");
                 }
             }
         }
 
-        if split_debug_ticks >= 0 && split_debug_ticks < 128 {
-            if split_debug_ticks % 4 == 0 {
-                let em = &game_loop.engine.node.manager;
-                let lo = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::Local).count();
-                let ho = em.entities.values().filter(|e| e.state == zeus_node::entity_manager::AuthorityState::HandoffOut).count();
-                let rd = game_loop.engine.recently_departed.len();
-                eprintln!(
-                    "[Node {}] T+{}: L={} HO={} dep={}",
-                    id, split_debug_ticks, lo, ho, rd
-                );
-                for tid in &tracked_ids {
-                    let in_em = em.entities.get(tid);
-                    let in_dep = game_loop.engine.recently_departed.get(tid);
-                    let in_remote = game_loop.engine.remote_entity_states.get(tid);
-                    if let Some(e) = in_em {
-                        eprintln!(
-                            "  [SWARM] id={} src=EM({:?}) pos=({:.3},{:.3},{:.3}) vel=({:.3},{:.3},{:.3})",
-                            tid, e.state, e.pos.0, e.pos.1, e.pos.2, e.vel.0, e.vel.1, e.vel.2
-                        );
-                    }
-                    if let Some((pos, vel, ticks)) = in_dep {
-                        let dt = 1.0_f32 / 128.0;
-                        let ep = (
-                            pos.0 + vel.0 * (*ticks as f32) * dt,
-                            pos.1 + vel.1 * (*ticks as f32) * dt,
-                            pos.2 + vel.2 * (*ticks as f32) * dt,
-                        );
-                        eprintln!(
-                            "  [SWARM] id={} src=RELAY(t={}) base=({:.3},{:.3},{:.3}) broadcast=({:.3},{:.3},{:.3})",
-                            tid, ticks, pos.0, pos.1, pos.2, ep.0, ep.1, ep.2
-                        );
-                    }
-                    if let Some(rs) = in_remote {
-                        eprintln!(
-                            "  [SWARM] id={} src=GOSSIP pos=({:.3},{:.3},{:.3}) vel=({:.3},{:.3},{:.3})",
-                            tid, rs.pos.0, rs.pos.1, rs.pos.2, rs.vel.0, rs.vel.1, rs.vel.2
-                        );
-                    }
-                    if in_em.is_none() && in_dep.is_none() && in_remote.is_none() {
-                        eprintln!("  [SWARM] id={} NOWHERE", tid);
-                    }
-                }
-            }
-            split_debug_ticks += 1;
-        }
+        let _ = split_debug_ticks;
 
         cell_broadcast_counter += 1;
         if cell_broadcast_counter % 16 == 0 {
